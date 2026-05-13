@@ -15,6 +15,9 @@ dist
 dist-ssr
 *.local
 
+# Tauri 图标母版（由 scripts/gen-tauri-icon.sh 从 appicon.png 生成）
+appicon-tauri.png
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

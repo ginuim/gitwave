@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Splitpanes, Pane } from 'splitpanes'
 import 'splitpanes/dist/splitpanes.css'
@@ -67,6 +67,27 @@ async function openRepo() {
   }
 }
 
+const STATUS_POLL_MS = 10_000
+let statusPollTimer: ReturnType<typeof setInterval> | null = null
+
+function refreshWorkspaceIfVisible() {
+  if (document.visibilityState !== 'visible') return
+  if (!repoPath.value || activeTab.value !== 'workspace') return
+  void refreshStatus({ silent: true })
+}
+
+function startWorkspaceStatusSync() {
+  if (statusPollTimer != null) return
+  statusPollTimer = setInterval(refreshWorkspaceIfVisible, STATUS_POLL_MS)
+}
+
+function stopWorkspaceStatusSync() {
+  if (statusPollTimer != null) {
+    clearInterval(statusPollTimer)
+    statusPollTimer = null
+  }
+}
+
 // Get repo path on mount
 onMounted(async () => {
   try {
@@ -80,6 +101,16 @@ onMounted(async () => {
   }
   // Always load recent repos regardless of current session state
   await refreshRecentRepos()
+
+  window.addEventListener('focus', refreshWorkspaceIfVisible)
+  document.addEventListener('visibilitychange', refreshWorkspaceIfVisible)
+  startWorkspaceStatusSync()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('focus', refreshWorkspaceIfVisible)
+  document.removeEventListener('visibilitychange', refreshWorkspaceIfVisible)
+  stopWorkspaceStatusSync()
 })
 
 // Refresh branches
@@ -104,8 +135,12 @@ async function refreshRecentRepos() {
   }
 }
 
-async function syncRefresh() {
-  const tasks = [refreshStatus(), refreshBranches(), refreshAheadBehind()]
+async function syncRefresh(opts?: { silentStatus?: boolean }) {
+  const tasks = [
+    refreshStatus(opts?.silentStatus ? { silent: true } : undefined),
+    refreshBranches(),
+    refreshAheadBehind(),
+  ]
   if (activeTab.value === 'history') {
     tasks.push(refreshHistory())
   }
@@ -124,10 +159,11 @@ async function switchRepo(path: string) {
   }
 }
 
-// Refresh status
-async function refreshStatus() {
+// Refresh status（silent：后台同步，不挡整个列表的加载态）
+async function refreshStatus(opts?: { silent?: boolean }) {
   if (!repoPath.value) return
-  statusLoading.value = true
+  const silent = opts?.silent ?? false
+  if (!silent) statusLoading.value = true
   try {
     statuses.value = await invoke<FileStatus[]>('get_git_status')
     // Clear selection if selected file no longer exists
@@ -137,9 +173,9 @@ async function refreshStatus() {
       diffText.value = ''
     }
   } catch (e: any) {
-    showToast(String(e))
+    if (!silent) showToast(String(e))
   } finally {
-    statusLoading.value = false
+    if (!silent) statusLoading.value = false
   }
 }
 
@@ -367,8 +403,8 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
   if (tab === 'history') {
     await refreshHistory()
   } else {
-    // Refresh workspace state (files may have changed externally)
-    await syncRefresh()
+    // Refresh workspace state（外部改文件 / 命令行 git 后回到工作区应立刻对齐，不必整页 loading）
+    await syncRefresh({ silentStatus: true })
     // Clear commit selection when switching back to workspace
     selectedCommitHash.value = null
     selectedCommitMsg.value = ''
