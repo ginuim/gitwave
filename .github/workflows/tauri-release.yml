@@ -1,0 +1,75 @@
+# 推送 v* tag 或手动触发时，构建 Windows 安装包并挂到 GitHub Release。
+name: Tauri release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布 Tag（例如 v0.1.0）"
+        required: true
+        type: string
+      prerelease:
+        description: "是否预发布"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: tauri-release-${{ github.ref_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      actions: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-windows
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=${{ github.event.inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: pnpm tauri
+          projectPath: .
+          tagName: ${{ steps.meta.outputs.tag }}
+          releaseName: GitWave ${{ steps.meta.outputs.tag }}
+          releaseBody: |
+            自动构建的 Windows NSIS 安装程序（.exe，见 Assets）。
+          prerelease: ${{ steps.meta.outputs.prerelease }}
