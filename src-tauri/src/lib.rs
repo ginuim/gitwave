@@ -331,7 +331,7 @@ fn get_git_log(state: State<'_, AppState>, all: Option<bool>) -> Result<Vec<Comm
     let repo = require_repo(&state)?;
     let format_str = "%h|%an|%ad|%s";
     let pretty = format!("--pretty=format:{format_str}");
-    let mut args = vec!["log", "-n", "50", &pretty, "--date=short"];
+    let mut args = vec!["log", "-n", "50", &pretty, "--date=iso"];
     if all.unwrap_or(false) {
         args.push("--all");
     }

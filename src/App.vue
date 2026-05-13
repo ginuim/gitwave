@@ -55,7 +55,7 @@ async function openRepo() {
     const path = await invoke<string>('open_repository')
     repoPath.value = path
     showToast('仓库已打开', 'success')
-    await Promise.all([refreshStatus(), refreshBranches(), refreshRecentRepos(), refreshAheadBehind()])
+    await Promise.all([syncRefresh(), refreshRecentRepos()])
   } catch (e: any) {
     if (e !== 'dialog cancelled') {
       showToast(String(e))
@@ -69,11 +69,13 @@ onMounted(async () => {
     const path = await invoke<string | null>('get_repo_path')
     repoPath.value = path
     if (path) {
-      await Promise.all([refreshStatus(), refreshBranches(), refreshRecentRepos(), refreshAheadBehind()])
+      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
     }
   } catch (_) {
     // ignore
   }
+  // Always load recent repos regardless of current session state
+  await refreshRecentRepos()
 })
 
 // Refresh branches
@@ -98,13 +100,21 @@ async function refreshRecentRepos() {
   }
 }
 
+async function syncRefresh() {
+  const tasks = [refreshStatus(), refreshBranches(), refreshAheadBehind()]
+  if (activeTab.value === 'history') {
+    tasks.push(refreshHistory())
+  }
+  await Promise.all(tasks)
+}
+
 // Switch to a known repo
 async function switchRepo(path: string) {
   try {
     await invoke<string>('switch_repository', { path })
     repoPath.value = path
     showToast('已切换仓库', 'success')
-    await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
+    await syncRefresh()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -231,7 +241,7 @@ async function checkoutBranch(name: string) {
   try {
     await invoke('checkout_branch', { name })
     showToast(`已切换到 ${name}`, 'success')
-    await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
+    await syncRefresh()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -243,7 +253,7 @@ async function checkoutRemote(remote: string) {
     await invoke('checkout_remote_branch', { remote })
     const local = remote.split('/').pop()
     showToast(`已切换到 ${local}（跟踪 ${remote}）`, 'success')
-    await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
+    await syncRefresh()
   } catch (e: any) {
     showToast(String(e))
   }
