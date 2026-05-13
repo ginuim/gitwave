@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { FilePlus, FileMinus, GitCommitVertical, Loader2 } from 'lucide-vue-next'
+import { join } from '@tauri-apps/api/path'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2 } from 'lucide-vue-next'
 import type { FileStatus } from '../types'
 
-defineProps<{
+const props = defineProps<{
   statuses: FileStatus[]
   selectedFile: string | null
   commitLoading: boolean
   statusLoading: boolean
+  repoPath: string | null
 }>()
 
 const emit = defineEmits<{
@@ -15,6 +18,7 @@ const emit = defineEmits<{
   unstageFile: [path: string]
   selectFile: [path: string, isStaged: boolean]
   commit: [message: string]
+  revealError: [message: string]
 }>()
 
 const commitMessage = ref('')
@@ -27,6 +31,20 @@ function handleCommit() {
 
 const unstagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => !f.isStaged)
 const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStaged)
+
+async function showInFolder(relPath: string, e: Event) {
+  e.stopPropagation()
+  if (!props.repoPath) {
+    emit('revealError', '未打开仓库')
+    return
+  }
+  try {
+    const abs = await join(props.repoPath, relPath)
+    await revealItemInDir(abs)
+  } catch (err) {
+    emit('revealError', String(err))
+  }
+}
 </script>
 
 <template>
@@ -64,6 +82,15 @@ const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStage
             <FilePlus :size="14" />
           </button>
           <span class="truncate flex-1 hover:text-[--accent] transition-colors">{{ file.path }}</span>
+          <button
+            v-if="repoPath"
+            type="button"
+            class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity"
+            title="在文件夹中显示"
+            @click.stop="showInFolder(file.path, $event)"
+          >
+            <FolderOpen :size="14" />
+          </button>
           <span class="flex-shrink-0 text-[--diff-removed-text] font-mono">{{ file.status }}</span>
         </div>
       </div>
@@ -96,6 +123,15 @@ const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStage
             <FileMinus :size="14" />
           </button>
           <span class="truncate flex-1 hover:text-[--accent] transition-colors">{{ file.path }}</span>
+          <button
+            v-if="repoPath"
+            type="button"
+            class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity"
+            title="在文件夹中显示"
+            @click.stop="showInFolder(file.path, $event)"
+          >
+            <FolderOpen :size="14" />
+          </button>
           <span class="flex-shrink-0 text-[--diff-added-text] font-mono">{{ file.status }}</span>
         </div>
       </div>

@@ -14,6 +14,8 @@ const repoPath = ref<string | null>(null)
 const activeTab = ref<'workspace' | 'history'>('workspace')
 const statuses = ref<FileStatus[]>([])
 const selectedFile = ref<string | null>(null)
+/** 工作区列表里当前选中项是否在「已暂存」区域（用于二进制图片 diff 预览取哪一侧） */
+const selectedFileIsStaged = ref(false)
 const selectedCommitHash = ref<string | null>(null)
 const selectedCommitMsg = ref('')
 const diffText = ref('')
@@ -177,6 +179,7 @@ async function commitChanges(message: string) {
 // Select file - show diff
 async function selectFile(path: string, isStaged: boolean) {
   selectedFile.value = path
+  selectedFileIsStaged.value = isStaged
   selectedCommitHash.value = null
   selectedCommitMsg.value = ''
   try {
@@ -211,6 +214,7 @@ async function selectCommit(hash: string) {
   selectedCommitHash.value = hash
   selectedCommitMsg.value = commit?.message ?? ''
   selectedFile.value = null
+  selectedFileIsStaged.value = false
   try {
     diffText.value = await invoke<string>('get_commit_diff', { hash })
   } catch (e: any) {
@@ -424,10 +428,12 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :selected-file="selectedFile"
         :commit-loading="commitLoading"
         :status-loading="statusLoading"
+        :repo-path="repoPath"
         @stage-file="stageFile"
         @unstage-file="unstageFile"
         @select-file="selectFile"
         @commit="commitChanges"
+        @reveal-error="showToast($event)"
       />
       <!-- History tab -->
       <HistoryTab
@@ -449,6 +455,9 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :file-name="diffFileName"
         :can-stage="!selectedCommitHash && !!selectedFile"
         :file-path="canStage ? selectedFile : null"
+        :repo-path="repoPath"
+        :workspace-is-staged="selectedFileIsStaged"
+        :commit-hash="selectedCommitHash"
         @stage-patch="handleStagePatch"
         @stage-file="stageFile"
       />

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { ChevronDown, ChevronRight, FileCode, FilePlus, User, CalendarDays } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -7,6 +8,12 @@ const props = defineProps<{
   fileName: string | null
   canStage: boolean
   filePath: string | null
+  /** 仓库根路径，用于加载二进制图片预览 */
+  repoPath: string | null
+  /** 当前工作区选中文件是否在已暂存列表（`git diff --cached` vs `git diff`） */
+  workspaceIsStaged: boolean
+  /** 历史里查看某条提交时传入 commit hash，否则为 null */
+  commitHash: string | null
 }>()
 
 const emit = defineEmits<{
@@ -172,6 +179,123 @@ const sections = computed((): FileDiffSection[] => {
 
   return result
 })
+
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|ico)$/i
+
+function isImageFileName(name: string): boolean {
+  return IMAGE_FILE_RE.test(name)
+}
+
+/** 无 @@ 块、且为二进制差异的图片文件（git 对二进制不输出文本 hunk） */
+const binaryImageEntries = computed((): { fileName: string }[] => {
+  const text = props.diffText
+  if (!text) return []
+
+  const diffStart = text.indexOf('\ndiff --git ')
+  const diffContent = diffStart >= 0 ? text.slice(diffStart + 1) : text
+  const rawParts = diffContent.split('\ndiff --git ')
+  const result: { fileName: string }[] = []
+
+  for (let idx = 0; idx < rawParts.length; idx++) {
+    const part = idx === 0 ? rawParts[0] : rawParts[idx]
+    if (!part.trim()) continue
+
+    const fullText = idx === 0 ? part : 'diff --git ' + part
+    const allLines = fullText.split('\n')
+
+    const firstLine = allLines[0]
+    const match = firstLine.match(/diff --git a\/(.+) b\/(.+)/)
+    const fileName = match ? (match[2] || match[1]) : (props.fileName || '')
+    if (!fileName || !isImageFileName(fileName)) continue
+
+    const hasHunk = allLines.some((l) => l.startsWith('@@'))
+    if (hasHunk) continue
+
+    const hasBinary = allLines.some(
+      (l) => l.startsWith('Binary files ') || l.includes('GIT binary patch'),
+    )
+    if (!hasBinary) continue
+
+    result.push({ fileName })
+  }
+
+  return result
+})
+
+interface BinaryImagePreviewRow {
+  fileName: string
+  oldDataUrl: string | null
+  newDataUrl: string | null
+}
+
+const binaryImagePreviewRows = ref<BinaryImagePreviewRow[]>([])
+const binaryImagePreviewLoading = ref(false)
+let binaryPreviewRequestId = 0
+
+watch(
+  () =>
+    [
+      props.diffText,
+      props.repoPath,
+      props.filePath,
+      props.workspaceIsStaged,
+      props.commitHash,
+    ] as const,
+  async () => {
+    const entries = binaryImageEntries.value
+    binaryImagePreviewRows.value = []
+    if (!props.repoPath || entries.length === 0) {
+      binaryImagePreviewLoading.value = false
+      return
+    }
+
+    const kind = props.commitHash ? 'commit' : props.workspaceIsStaged ? 'staged' : 'unstaged'
+    const paths =
+      props.commitHash != null
+        ? entries.map((e) => e.fileName)
+        : props.filePath
+          ? entries.filter((e) => e.fileName === props.filePath).map((e) => e.fileName)
+          : entries.map((e) => e.fileName)
+
+    if (paths.length === 0) {
+      binaryImagePreviewLoading.value = false
+      return
+    }
+
+    const req = ++binaryPreviewRequestId
+    binaryImagePreviewLoading.value = true
+    try {
+      const rows: BinaryImagePreviewRow[] = []
+      for (const relativePath of paths) {
+        const preview = await invoke<{
+          oldDataUrl: string | null
+          newDataUrl: string | null
+        }>('get_binary_image_preview', {
+          relativePath,
+          kind,
+          commitHash: props.commitHash,
+        })
+        rows.push({
+          fileName: relativePath,
+          oldDataUrl: preview.oldDataUrl ?? null,
+          newDataUrl: preview.newDataUrl ?? null,
+        })
+      }
+      if (req === binaryPreviewRequestId) {
+        binaryImagePreviewRows.value = rows
+      }
+    } catch {
+      if (req === binaryPreviewRequestId) {
+        binaryImagePreviewRows.value = []
+      }
+    } finally {
+      if (req === binaryPreviewRequestId) {
+        binaryImagePreviewLoading.value = false
+      }
+    }
+  },
+  { immediate: true },
+)
 
 // ── Stage helpers ──
 
@@ -479,6 +603,55 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
           <div class="text-sm text-[--text-primary] font-medium leading-relaxed whitespace-pre-wrap">
             {{ commitInfo.message }}
           </div>
+        </div>
+
+        <!-- 二进制图片：在 diff 区域并排预览（git 不输出文本 hunk） -->
+        <div
+          v-if="binaryImageEntries.length > 0"
+          class="border-b border-[--border-color] bg-[--bg-secondary]"
+        >
+          <div class="px-4 py-2 text-[11px] text-[--text-secondary] border-b border-[--border-color]">
+            图片二进制差异
+            <span v-if="binaryImagePreviewLoading" class="ml-2 text-[--accent]">加载预览中…</span>
+          </div>
+          <div v-if="!repoPath" class="px-4 py-3 text-xs text-[--text-secondary]">
+            未打开仓库路径，无法预览图片。
+          </div>
+          <template v-else>
+            <div
+              v-for="row in binaryImagePreviewRows"
+              :key="row.fileName"
+              class="px-4 py-3 border-b border-[--border-color] last:border-b-0"
+            >
+              <div class="text-xs font-medium text-[--text-primary] mb-3 truncate">{{ row.fileName }}</div>
+              <div class="flex flex-wrap gap-4">
+                <div class="flex-1 min-w-[140px] max-w-full sm:max-w-[calc(50%-0.5rem)]">
+                  <div class="text-[10px] uppercase tracking-wide text-[--text-secondary] mb-1.5">变更前</div>
+                  <img
+                    v-if="row.oldDataUrl"
+                    :src="row.oldDataUrl"
+                    alt="变更前"
+                    class="max-h-72 w-auto max-w-full rounded border border-[--border-color] object-contain bg-[--bg-tertiary]"
+                  />
+                  <div v-else class="text-xs text-[--text-secondary] py-6 text-center rounded border border-dashed border-[--border-color] bg-[--bg-tertiary]/50">
+                    无旧版（如新增文件）
+                  </div>
+                </div>
+                <div class="flex-1 min-w-[140px] max-w-full sm:max-w-[calc(50%-0.5rem)]">
+                  <div class="text-[10px] uppercase tracking-wide text-[--text-secondary] mb-1.5">变更后</div>
+                  <img
+                    v-if="row.newDataUrl"
+                    :src="row.newDataUrl"
+                    alt="变更后"
+                    class="max-h-72 w-auto max-w-full rounded border border-[--border-color] object-contain bg-[--bg-tertiary]"
+                  />
+                  <div v-else class="text-xs text-[--text-secondary] py-6 text-center rounded border border-dashed border-[--border-color] bg-[--bg-tertiary]/50">
+                    无新版（如已删除）
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- File diff sections -->

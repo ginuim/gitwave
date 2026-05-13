@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -88,6 +89,148 @@ fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn run_git_bytes(repo: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    let mut cmd = Command::new("git");
+    hide_git_child_console(&mut cmd);
+    cmd.current_dir(repo);
+    cmd.args(args);
+    set_git_utf8_env(&mut cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to spawn git: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(output.stdout)
+}
+
+fn ensure_safe_repo_relative_path(path: &str) -> Result<(), String> {
+    let p = normalize_path_for_git(path);
+    if p.is_empty() || p.starts_with('/') || p.contains("..") {
+        return Err("invalid path".to_string());
+    }
+    Ok(())
+}
+
+fn mime_for_image_path(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
+    } else if lower.ends_with(".ico") {
+        "image/x-icon"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+fn bytes_to_data_url(bytes: &[u8], mime: &str) -> String {
+    format!("data:{mime};base64,{}", STANDARD.encode(bytes))
+}
+
+/// Resolve `rev:path` (e.g. `HEAD:src/a.png`, `:0:src/a.png`, `abc123^:src/a.png`) to blob bytes.
+fn read_git_blob_bytes(repo: &str, rev_path: &str) -> Result<Option<Vec<u8>>, String> {
+    let mut cmd = Command::new("git");
+    hide_git_child_console(&mut cmd);
+    cmd.current_dir(repo);
+    cmd.args(["rev-parse", "-q", "--verify", rev_path]);
+    set_git_utf8_env(&mut cmd);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to spawn git: {e}"))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if hash.is_empty() {
+        return Ok(None);
+    }
+    let bytes = run_git_bytes(repo, &["cat-file", "blob", &hash])?;
+    Ok(Some(bytes))
+}
+
+fn read_worktree_file_bytes(repo: &str, rel: &str) -> Result<Option<Vec<u8>>, String> {
+    ensure_safe_repo_relative_path(rel)?;
+    let root = Path::new(repo);
+    let path = root.join(rel);
+    if !path.exists() || !path.is_file() {
+        return Ok(None);
+    }
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| format!("failed to canonicalize repo root: {e}"))?;
+    let file_canon = path
+        .canonicalize()
+        .map_err(|e| format!("failed to canonicalize file path: {e}"))?;
+    if !file_canon.starts_with(&root_canon) {
+        return Err("path escapes repository".to_string());
+    }
+    Ok(Some(fs::read(&file_canon).map_err(|e| format!("read file: {e}"))?))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinaryImagePreview {
+    pub old_data_url: Option<String>,
+    pub new_data_url: Option<String>,
+}
+
+/// `kind`: `unstaged` (worktree vs index), `staged` (index vs HEAD), `commit` (parent vs commit).
+#[tauri::command]
+fn get_binary_image_preview(
+    state: State<'_, AppState>,
+    relative_path: String,
+    kind: String,
+    commit_hash: Option<String>,
+) -> Result<BinaryImagePreview, String> {
+    let repo = require_repo(&state)?;
+    let rel = normalize_path_for_git(&relative_path);
+    ensure_safe_repo_relative_path(&rel)?;
+    let mime = mime_for_image_path(&rel);
+
+    match kind.as_str() {
+        "unstaged" => {
+            let old = read_git_blob_bytes(&repo, &format!(":0:{rel}"))?
+                .map(|b| bytes_to_data_url(&b, mime));
+            let new = read_worktree_file_bytes(&repo, &rel)?
+                .map(|b| bytes_to_data_url(&b, mime));
+            Ok(BinaryImagePreview {
+                old_data_url: old,
+                new_data_url: new,
+            })
+        }
+        "staged" => {
+            let old = read_git_blob_bytes(&repo, &format!("HEAD:{rel}"))?
+                .map(|b| bytes_to_data_url(&b, mime));
+            let new = read_git_blob_bytes(&repo, &format!(":0:{rel}"))?
+                .map(|b| bytes_to_data_url(&b, mime));
+            Ok(BinaryImagePreview {
+                old_data_url: old,
+                new_data_url: new,
+            })
+        }
+        "commit" => {
+            let hash = commit_hash.ok_or_else(|| "commitHash required for commit preview".to_string())?;
+            let old = read_git_blob_bytes(&repo, &format!("{hash}^:{rel}"))?
+                .map(|b| bytes_to_data_url(&b, mime));
+            let new = read_git_blob_bytes(&repo, &format!("{hash}:{rel}"))?
+                .map(|b| bytes_to_data_url(&b, mime));
+            Ok(BinaryImagePreview {
+                old_data_url: old,
+                new_data_url: new,
+            })
+        }
+        _ => Err(format!("unknown preview kind: {kind}")),
+    }
 }
 
 fn require_repo(state: &AppState) -> Result<String, String> {
@@ -548,6 +691,7 @@ pub fn run() {
             get_git_log,
             get_branches,
             get_commit_diff,
+            get_binary_image_preview,
             stage_patch,
             rename_branch,
             delete_branch,
