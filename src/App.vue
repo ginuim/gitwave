@@ -7,7 +7,7 @@ import SidebarPanel from './components/SidebarPanel.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import DiffPanel from './components/DiffPanel.vue'
 import HistoryTab from './components/HistoryTab.vue'
-import type { FileStatus, CommitLog, BranchInfo } from './types'
+import type { FileStatus, CommitLog, BranchInfo, AheadBehind } from './types'
 
 // State
 const repoPath = ref<string | null>(null)
@@ -25,11 +25,17 @@ const diffFileName = computed(() => {
 
 const branches = ref<BranchInfo[]>([])
 const branchesLoading = ref(false)
+const recentRepos = ref<string[]>([])
+const historyFilter = ref<'current' | 'all'>('current')
+const currentBranch = computed(() => branches.value.find(b => b.isCurrent)?.name ?? '')
 
 const statusLoading = ref(false)
 const commitLoading = ref(false)
 const historyLoading = ref(false)
-const pushPullLoading = ref(false)
+const pushLoading = ref(false)
+const pullLoading = ref(false)
+const aheadBehind = ref<AheadBehind>({ ahead: 0, behind: 0 })
+const fetchLoading = ref(false)
 
 // Toast
 const toast = ref<{ message: string; type: 'error' | 'success' } | null>(null)
@@ -40,7 +46,7 @@ function showToast(message: string, type: 'error' | 'success' = 'error') {
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => {
     toast.value = null
-  }, 4000)
+  }, 6000)
 }
 
 // Open repository
@@ -49,7 +55,7 @@ async function openRepo() {
     const path = await invoke<string>('open_repository')
     repoPath.value = path
     showToast('仓库已打开', 'success')
-    await Promise.all([refreshStatus(), refreshBranches()])
+    await Promise.all([refreshStatus(), refreshBranches(), refreshRecentRepos(), refreshAheadBehind()])
   } catch (e: any) {
     if (e !== 'dialog cancelled') {
       showToast(String(e))
@@ -63,7 +69,7 @@ onMounted(async () => {
     const path = await invoke<string | null>('get_repo_path')
     repoPath.value = path
     if (path) {
-      await Promise.all([refreshStatus(), refreshBranches()])
+      await Promise.all([refreshStatus(), refreshBranches(), refreshRecentRepos(), refreshAheadBehind()])
     }
   } catch (_) {
     // ignore
@@ -80,6 +86,27 @@ async function refreshBranches() {
     showToast(String(e))
   } finally {
     branchesLoading.value = false
+  }
+}
+
+// Refresh recent repos
+async function refreshRecentRepos() {
+  try {
+    recentRepos.value = await invoke<string[]>('get_recent_repos')
+  } catch (_) {
+    // ignore
+  }
+}
+
+// Switch to a known repo
+async function switchRepo(path: string) {
+  try {
+    await invoke<string>('switch_repository', { path })
+    repoPath.value = path
+    showToast('已切换仓库', 'success')
+    await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
+  } catch (e: any) {
+    showToast(String(e))
   }
 }
 
@@ -127,7 +154,7 @@ async function commitChanges(message: string) {
   try {
     await invoke('commit_changes', { message })
     showToast('提交成功', 'success')
-    await refreshStatus()
+    await Promise.all([refreshStatus(), refreshAheadBehind()])
   } catch (e: any) {
     showToast(String(e))
   } finally {
@@ -164,27 +191,113 @@ async function selectCommit(hash: string) {
 
 // Push / Pull
 async function gitPush() {
-  pushPullLoading.value = true
+  pushLoading.value = true
   try {
     const result = await invoke<string>('git_push')
-    showToast(result === 'ok' ? 'Push 成功' : result, 'success')
+    showToast(!result || result === 'ok' ? 'Push 成功' : result, 'success')
+    await refreshAheadBehind()
   } catch (e: any) {
     showToast(String(e))
   } finally {
-    pushPullLoading.value = false
+    pushLoading.value = false
   }
 }
 
 async function gitPull() {
-  pushPullLoading.value = true
+  pullLoading.value = true
   try {
     const result = await invoke<string>('git_pull')
-    showToast(result === 'ok' ? 'Pull 成功' : result, 'success')
-    await refreshStatus()
+    showToast(!result || result === 'ok' ? 'Pull 成功' : result, 'success')
+    await Promise.all([refreshStatus(), refreshAheadBehind()])
   } catch (e: any) {
     showToast(String(e))
   } finally {
-    pushPullLoading.value = false
+    pullLoading.value = false
+  }
+}
+
+// Ahead / behind
+async function refreshAheadBehind() {
+  if (!repoPath.value) return
+  try {
+    aheadBehind.value = await invoke<AheadBehind>('get_ahead_behind')
+  } catch (_) {
+    // no upstream configured — ignore
+  }
+}
+
+// Checkout branch
+async function checkoutBranch(name: string) {
+  try {
+    await invoke('checkout_branch', { name })
+    showToast(`已切换到 ${name}`, 'success')
+    await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+// Checkout remote branch as local tracking branch
+async function checkoutRemote(remote: string) {
+  try {
+    await invoke('checkout_remote_branch', { remote })
+    const local = remote.split('/').pop()
+    showToast(`已切换到 ${local}（跟踪 ${remote}）`, 'success')
+    await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+// Branch operations
+async function renameBranch(oldName: string, newName: string) {
+  try {
+    await invoke('rename_branch', { oldName, newName })
+    showToast(`分支已重命名为「${newName}」`, 'success')
+    await Promise.all([refreshBranches(), refreshStatus()])
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+async function deleteBranch(name: string) {
+  try {
+    await invoke('delete_branch', { name, force: false })
+    showToast(`分支「${name}」已删除`, 'success')
+    await Promise.all([refreshBranches(), refreshStatus()])
+  } catch (e: any) {
+    // If normal delete fails, try force
+    try {
+      await invoke('delete_branch', { name, force: true })
+      showToast(`分支「${name}」已强制删除`, 'success')
+      await Promise.all([refreshBranches(), refreshStatus()])
+    } catch (e2: any) {
+      showToast(String(e2))
+    }
+  }
+}
+
+async function mergeBranch(name: string) {
+  try {
+    await invoke('merge_branch', { name })
+    showToast(`已将「${name}」合并到当前分支`, 'success')
+    await Promise.all([refreshStatus(), refreshAheadBehind()])
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+// Fetch
+async function gitFetch() {
+  fetchLoading.value = true
+  try {
+    const result = await invoke<string>('git_fetch')
+    showToast(!result || result === 'ok' ? 'Fetch 完成' : result, 'success')
+    await refreshAheadBehind()
+  } catch (e: any) {
+    showToast(String(e))
+  } finally {
+    fetchLoading.value = false
   }
 }
 
@@ -193,7 +306,7 @@ async function refreshHistory() {
   if (!repoPath.value) return
   historyLoading.value = true
   try {
-    commitLogs.value = await invoke<CommitLog[]>('get_git_log')
+    commitLogs.value = await invoke<CommitLog[]>('get_git_log', { all: historyFilter.value === 'all' })
   } catch (e: any) {
     showToast(String(e))
   } finally {
@@ -224,11 +337,22 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
       <SidebarPanel
         :repo-path="repoPath"
         :active-tab="activeTab"
-        :push-pull-loading="pushPullLoading"
+        :push-loading="pushLoading"
+        :pull-loading="pullLoading"
         :branches="branches"
         :branches-loading="branchesLoading"
+        :recent-repos="recentRepos"
+        :ahead-behind="aheadBehind"
+        :fetch-loading="fetchLoading"
         @open-repo="openRepo"
+        @switch-repo="switchRepo"
         @switch-tab="onSwitchTab"
+        @checkout-branch="checkoutBranch"
+        @checkout-remote="checkoutRemote"
+        @rename-branch="renameBranch"
+        @delete-branch="deleteBranch"
+        @merge-branch="mergeBranch"
+        @fetch="gitFetch"
         @push="gitPush"
         @pull="gitPull"
       />
@@ -254,7 +378,10 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :logs="commitLogs"
         :loading="historyLoading"
         :selected-hash="selectedCommitHash"
+        :filter="historyFilter"
+        :current-branch="currentBranch"
         @select-commit="selectCommit"
+        @update-filter="historyFilter = $event; refreshHistory()"
       />
     </Pane>
 
@@ -268,13 +395,15 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
   </Splitpanes>
 
     <!-- Toast -->
-    <div
-      v-if="toast"
-      class="fixed bottom-4 right-4 z-50 px-4 py-2 rounded shadow-lg text-xs max-w-md break-words"
-      :class="toast.type === 'error'
-        ? 'bg-red-800 text-red-100 border border-red-700'
-        : 'bg-green-800 text-green-100 border border-green-700'"
-    >
-      {{ toast.message }}
-  </div>
+    <Transition name="toast">
+      <div
+        v-if="toast"
+        class="fixed bottom-6 right-6 z-[9999] px-5 py-3 rounded-lg shadow-2xl text-sm max-w-md break-words"
+        :class="toast.type === 'error'
+          ? 'bg-red-800 text-red-100 border border-red-700'
+          : 'bg-green-800 text-green-100 border border-green-700'"
+      >
+        {{ toast.message }}
+      </div>
+    </Transition>
 </template>

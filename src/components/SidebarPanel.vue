@@ -3,23 +3,122 @@ import { ref, computed } from 'vue'
 import {
   FolderOpen, GitBranch, Globe, ArrowUp, ArrowDown,
   List, History, Loader2, ChevronRight, ChevronDown,
+  ChevronDown as ChevronDownIcon,
 } from 'lucide-vue-next'
-import type { BranchInfo } from '../types'
+import type { BranchInfo, AheadBehind } from '../types'
 
 const props = defineProps<{
   repoPath: string | null
   activeTab: 'workspace' | 'history'
-  pushPullLoading: boolean
+  pushLoading: boolean
+  pullLoading: boolean
   branches: BranchInfo[]
   branchesLoading: boolean
+  recentRepos: string[]
+  aheadBehind: AheadBehind
+  fetchLoading: boolean
 }>()
 
 const emit = defineEmits<{
   openRepo: []
+  switchRepo: [path: string]
   switchTab: [tab: 'workspace' | 'history']
+  checkoutBranch: [name: string]
+  checkoutRemote: [remote: string]
+  renameBranch: [oldName: string, newName: string]
+  deleteBranch: [name: string]
+  mergeBranch: [name: string]
+  fetch: []
   push: []
   pull: []
 }>()
+
+// --- Dropdown ---
+const dropdownOpen = ref(false)
+
+function toggleDropdown() {
+  dropdownOpen.value = !dropdownOpen.value
+}
+
+function selectPath(path: string) {
+  dropdownOpen.value = false
+  emit('switchRepo', path)
+}
+
+function selectOpenOther() {
+  dropdownOpen.value = false
+  emit('openRepo')
+}
+
+function handleClickOutside(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.closest('.repo-dropdown')) {
+    dropdownOpen.value = false
+  }
+}
+
+// --- Context menu ---
+const ctxMenu = ref<{ x: number; y: number; branch: string; isCurrent: boolean } | null>(null)
+
+function handleContextMenu(e: MouseEvent, branch: string, isCurrent: boolean) {
+  e.preventDefault()
+  ctxMenu.value = { x: e.clientX, y: e.clientY, branch, isCurrent }
+}
+
+function closeCtxMenu() {
+  ctxMenu.value = null
+}
+
+// --- Rename dialog ---
+const renameDialog = ref<{ branch: string; value: string } | null>(null)
+const renameInput = ref<HTMLInputElement | null>(null)
+
+function ctxRename() {
+  const b = ctxMenu.value?.branch
+  closeCtxMenu()
+  if (!b) return
+  renameDialog.value = { branch: b, value: b }
+  // focus input after next tick
+  setTimeout(() => renameInput.value?.focus(), 50)
+}
+
+function submitRename() {
+  const d = renameDialog.value
+  if (!d) return
+  if (d.value && d.value !== d.branch) {
+    emit('renameBranch', d.branch, d.value)
+  }
+  renameDialog.value = null
+}
+
+function cancelRename() {
+  renameDialog.value = null
+}
+
+function ctxDelete() {
+  const b = ctxMenu.value?.branch
+  closeCtxMenu()
+  if (!b) return
+  if (confirm(`确认删除分支「${b}」？`)) {
+    emit('deleteBranch', b)
+  }
+}
+
+function ctxMerge() {
+  const b = ctxMenu.value?.branch
+  closeCtxMenu()
+  if (!b) return
+  if (confirm(`确认将「${b}」合并到当前分支？`)) {
+    emit('mergeBranch', b)
+  }
+}
+
+// Close context menu on outside click
+function globalClick() {
+  closeCtxMenu()
+  // also close dropdown
+  dropdownOpen.value = false
+}
 
 // --- Branch tree logic ---
 
@@ -39,7 +138,6 @@ function toggleGroup(key: string) {
   const s = expandedGroups.value
   if (s.has(key)) s.delete(key)
   else s.add(key)
-  // trigger reactivity
   expandedGroups.value = new Set(s)
 }
 
@@ -52,7 +150,6 @@ function buildTree(branches: BranchInfo[]): TreeNode[] {
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]
       if (i === parts.length - 1) {
-        // leaf
         node[part] = { __leaf: true, branch: b }
       } else {
         if (!node[part]) node[part] = {}
@@ -79,7 +176,6 @@ function buildTree(branches: BranchInfo[]): TreeNode[] {
         })
       } else {
         const groupKey = prefix + key + '/'
-        // Check if group has any leaf descendants
         const hasLeaves = hasLeafDescendant(val)
         result.push({
           label: key,
@@ -87,6 +183,7 @@ function buildTree(branches: BranchInfo[]): TreeNode[] {
           isLeaf: false,
           isCurrent: false,
           isRemote: false,
+          isHead: false,
           key: groupKey,
         })
         if (expandedGroups.value.has(groupKey) && hasLeaves) {
@@ -114,20 +211,55 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-[--bg-secondary] border-r border-[--border-color] select-none">
-    <!-- Header / Open Repo -->
-    <div class="p-3 flex flex-col gap-2">
+  <div
+    class="h-full flex flex-col bg-[--bg-secondary] border-r border-[--border-color] select-none"
+    @click="globalClick"
+    @contextmenu="closeCtxMenu"
+  >
+    <!-- Repo selector dropdown -->
+    <div class="p-3 repo-dropdown relative">
       <button
-        class="flex items-center gap-2 px-3 py-2 rounded text-sm bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors"
-        @click="emit('openRepo')"
+        class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors truncate"
+        @click.stop="toggleDropdown"
       >
-        <FolderOpen :size="16" />
-        <span>打开本地仓库</span>
+        <FolderOpen :size="16" class="flex-shrink-0" />
+        <span class="truncate flex-1 text-left">{{ repoPath ? repoPath.split('/').pop() || repoPath : '打开本地仓库' }}</span>
+        <ChevronDownIcon :size="14" class="flex-shrink-0" />
       </button>
+
+      <!-- Dropdown menu -->
+      <div
+        v-if="dropdownOpen"
+        class="absolute left-3 right-3 top-full mt-1 bg-[--bg-tertiary] border border-[--border-color] rounded shadow-lg z-50 max-h-60 overflow-y-auto text-xs"
+      >
+        <div
+          v-for="path in recentRepos"
+          :key="path"
+          class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[--accent] hover:text-white transition-colors truncate"
+          :class="path === repoPath ? 'text-[--accent] font-medium' : 'text-[--text-primary]'"
+          @click.stop="selectPath(path)"
+        >
+          <FolderOpen :size="13" class="flex-shrink-0" />
+          <span class="truncate">{{ path.split('/').pop() }}</span>
+        </div>
+
+        <div
+          v-if="recentRepos.length > 0"
+          class="h-px bg-[--border-color] mx-2"
+        />
+
+        <div
+          class="flex items-center gap-2 px-3 py-2 cursor-pointer text-[--text-secondary] hover:bg-[--accent] hover:text-white transition-colors"
+          @click.stop="selectOpenOther"
+        >
+          <FolderOpen :size="13" class="flex-shrink-0" />
+          <span>打开其他仓库...</span>
+        </div>
+      </div>
 
       <div
         v-if="repoPath"
-        class="text-xs text-[--text-secondary] px-1 truncate"
+        class="text-[10px] text-[--text-secondary] px-1 mt-1 truncate"
         :title="repoPath"
       >
         {{ repoPath }}
@@ -158,23 +290,51 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
       </button>
     </div>
 
-    <!-- Push / Pull -->
+    <!-- Fetch / Push / Pull -->
     <div v-if="repoPath" class="flex gap-1 px-3 py-2 border-b border-[--border-color]">
       <button
-        class="flex items-center gap-1 px-2 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors disabled:opacity-40"
-        :disabled="pushPullLoading"
-        @click="emit('push')"
+        class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
+        :class="fetchLoading
+          ? 'text-[--accent] bg-[--bg-tertiary] cursor-wait'
+          : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
+        :disabled="fetchLoading"
+        @click="emit('fetch')"
       >
-        <ArrowUp :size="14" />
-        <span>Push</span>
+        <Loader2 v-if="fetchLoading" :size="12" class="animate-spin flex-shrink-0" />
+        <ArrowDown v-else :size="14" class="flex-shrink-0" />
+        <span>Fetch</span>
       </button>
       <button
-        class="flex items-center gap-1 px-2 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors disabled:opacity-40"
-        :disabled="pushPullLoading"
+        class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors relative"
+        :class="pullLoading
+          ? 'text-[--accent] bg-[--bg-tertiary] cursor-wait'
+          : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
+        :disabled="pullLoading"
         @click="emit('pull')"
       >
-        <ArrowDown :size="14" />
+        <Loader2 v-if="pullLoading" :size="12" class="animate-spin flex-shrink-0" />
+        <ArrowDown v-else :size="14" class="flex-shrink-0" />
         <span>Pull</span>
+        <span
+          v-if="!pullLoading && aheadBehind.behind > 0"
+          class="absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center px-1 rounded-full text-[10px] font-semibold bg-[--accent] text-white leading-none"
+        >{{ aheadBehind.behind }}</span>
+      </button>
+      <button
+        class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors relative"
+        :class="pushLoading
+          ? 'text-[--accent] bg-[--bg-tertiary] cursor-wait'
+          : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
+        :disabled="pushLoading"
+        @click="emit('push')"
+      >
+        <Loader2 v-if="pushLoading" :size="12" class="animate-spin flex-shrink-0" />
+        <ArrowUp v-else :size="14" class="flex-shrink-0" />
+        <span>Push</span>
+        <span
+          v-if="!pushLoading && aheadBehind.ahead > 0"
+          class="absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center px-1 rounded-full text-[10px] font-semibold bg-[--accent] text-white leading-none"
+        >{{ aheadBehind.ahead }}</span>
       </button>
     </div>
 
@@ -191,13 +351,16 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         <div
           v-for="node in localBranches"
           :key="node.key"
-          class="flex items-center gap-1 rounded text-xs cursor-default"
+          class="flex items-center gap-1 rounded text-xs"
           :class="node.isLeaf
-            ? (node.isCurrent ? 'text-[--accent] font-medium' : 'text-[--text-secondary] hover:text-[--text-primary]')
+            ? (node.isCurrent
+              ? 'text-[--accent] font-medium cursor-default'
+              : 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]')
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
           :style="{ paddingLeft: (node.depth * 14 + 4) + 'px' }"
+          @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', node.label)"
+          @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, node.label, node.isCurrent)"
         >
-          <!-- Group toggle -->
           <button
             v-if="!node.isLeaf"
             class="flex-shrink-0 p-0.5 rounded hover:bg-[--bg-tertiary]"
@@ -215,12 +378,9 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
             />
           </button>
 
-          <!-- Leaf spacer for alignment -->
           <div v-if="node.isLeaf" class="w-5 flex-shrink-0" />
 
-          <!-- Icon -->
           <GitBranch v-if="node.isLeaf" :size="11" class="flex-shrink-0" />
-          <!-- Folder icon only renders as empty space to align - group icon is the chevron above -->
 
           <span class="truncate">{{ node.label }}</span>
           <span
@@ -240,13 +400,13 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         <div
           v-for="node in remoteBranches"
           :key="node.key"
-          class="flex items-center gap-1 rounded text-xs cursor-default"
+          class="flex items-center gap-1 rounded text-xs"
           :class="node.isLeaf
-            ? 'text-[--text-secondary] hover:text-[--text-primary]'
+            ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
           :style="{ paddingLeft: (node.depth * 14 + 4) + 'px' }"
+          @click="node.isLeaf && emit('checkoutRemote', node.key)"
         >
-          <!-- Group toggle -->
           <button
             v-if="!node.isLeaf"
             class="flex-shrink-0 p-0.5 rounded hover:bg-[--bg-tertiary]"
@@ -280,5 +440,65 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         尚未打开仓库
       </div>
     </div>
+
+    <!-- Context menu -->
+    <Teleport to="body">
+      <div
+        v-if="ctxMenu"
+        class="fixed z-[9999] bg-[--bg-tertiary] border border-[--border-color] rounded shadow-xl py-1 text-xs min-w-[120px]"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        @click.stop
+      >
+        <button
+          class="w-full text-left px-3 py-1.5 text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors"
+          @click="ctxRename"
+        >重命名</button>
+        <template v-if="!ctxMenu.isCurrent">
+          <div class="h-px bg-[--border-color] mx-2" />
+          <button
+            class="w-full text-left px-3 py-1.5 text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors"
+            @click="ctxMerge"
+          >合并到当前分支</button>
+          <button
+            class="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-700 hover:text-white transition-colors"
+            @click="ctxDelete"
+          >删除</button>
+        </template>
+      </div>
+    </Teleport>
+
+    <!-- Rename dialog -->
+    <Teleport to="body">
+      <div
+        v-if="renameDialog"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="cancelRename"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-lg shadow-2xl p-4 w-80"
+          @click.stop
+        >
+          <div class="text-sm text-[--text-primary] mb-3 font-medium">重命名分支</div>
+          <div class="text-xs text-[--text-secondary] mb-2">{{ renameDialog.branch }}</div>
+          <input
+            ref="renameInput"
+            v-model="renameDialog.value"
+            class="w-full px-3 py-1.5 rounded bg-[--bg-secondary] border border-[--border-color] text-sm text-[--text-primary] outline-none focus:border-[--accent] transition-colors"
+            @keydown.enter="submitRename"
+            @keydown.escape="cancelRename"
+          />
+          <div class="flex justify-end gap-2 mt-3">
+            <button
+              class="px-3 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors"
+              @click="cancelRename"
+            >取消</button>
+            <button
+              class="px-3 py-1 rounded text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors"
+              @click="submitRename"
+            >确定</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

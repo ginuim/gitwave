@@ -11,6 +11,11 @@ export interface BranchInfo {
   isHead: boolean;
 }
 
+export interface AheadBehind {
+  ahead: number;
+  behind: number;
+}
+
 export interface CommitLog {
   hash: string;
   author: string;

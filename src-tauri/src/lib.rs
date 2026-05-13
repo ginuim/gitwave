@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -84,6 +85,38 @@ fn require_repo(state: &AppState) -> Result<String, String> {
 fn is_git_dir(root: &Path) -> bool {
     let git = root.join(".git");
     git.exists()
+}
+
+fn repos_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("failed to create app data dir: {e}"))?;
+    Ok(dir.join("recent_repos.json"))
+}
+
+fn load_recent_repos(app: &tauri::AppHandle) -> Vec<String> {
+    repos_file_path(app)
+        .ok()
+        .and_then(|path| {
+            if path.exists() {
+                fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+            } else {
+                Some(Vec::new())
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn save_recent_repos(app: &tauri::AppHandle, repos: &[String]) -> Result<(), String> {
+    let path = repos_file_path(app)?;
+    let json =
+        serde_json::to_string(repos).map_err(|e| format!("serialization error: {e}"))?;
+    fs::write(&path, &json).map_err(|e| format!("write error: {e}"))?;
+    Ok(())
 }
 
 fn parse_porcelain_path(rest: &str) -> String {
@@ -210,6 +243,12 @@ async fn open_repository(app: tauri::AppHandle) -> Result<String, String> {
         ));
     }
     {
+        let mut recent = load_recent_repos(&app);
+        recent.retain(|r| r != &path_str);
+        recent.insert(0, path_str.clone());
+        recent.truncate(10);
+        save_recent_repos(&app, &recent)?;
+
         let state = app.state::<AppState>();
         let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
         *guard = Some(path_str.clone());
@@ -221,6 +260,25 @@ async fn open_repository(app: tauri::AppHandle) -> Result<String, String> {
 fn get_repo_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
     Ok(guard.clone())
+}
+
+#[tauri::command]
+fn get_recent_repos(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    Ok(load_recent_repos(&app))
+}
+
+#[tauri::command]
+fn switch_repository(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let root = PathBuf::from(&path);
+    if !is_git_dir(&root) {
+        return Err(format!("not a git repository (no .git at): {path}"));
+    }
+    {
+        let state = app.state::<AppState>();
+        let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
+        *guard = Some(path.clone());
+    }
+    Ok(path)
 }
 
 #[tauri::command]
@@ -269,19 +327,15 @@ fn get_file_diff(state: State<'_, AppState>, path: String, is_staged: bool) -> R
 }
 
 #[tauri::command]
-fn get_git_log(state: State<'_, AppState>) -> Result<Vec<CommitLog>, String> {
+fn get_git_log(state: State<'_, AppState>, all: Option<bool>) -> Result<Vec<CommitLog>, String> {
     let repo = require_repo(&state)?;
-    let format = "%h|%an|%ad|%s";
-    let raw = run_git(
-        &repo,
-        &[
-            "log",
-            "-n",
-            "50",
-            &format!("--pretty=format:{format}"),
-            "--date=short",
-        ],
-    )?;
+    let format_str = "%h|%an|%ad|%s";
+    let pretty = format!("--pretty=format:{format_str}");
+    let mut args = vec!["log", "-n", "50", &pretty, "--date=short"];
+    if all.unwrap_or(false) {
+        args.push("--all");
+    }
+    let raw = run_git(&repo, &args)?;
     let mut logs = Vec::new();
     for line in raw.lines() {
         if line.is_empty() {
@@ -315,16 +369,93 @@ fn get_commit_diff(state: State<'_, AppState>, hash: String) -> Result<String, S
     run_git(&repo, &["show", &hash])
 }
 
-#[tauri::command]
-fn git_push(state: State<'_, AppState>) -> Result<String, String> {
-    let repo = require_repo(&state)?;
-    run_git(&repo, &["push"]).map(|s| if s.is_empty() { "ok".into() } else { s })
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AheadBehind {
+    pub ahead: usize,
+    pub behind: usize,
 }
 
 #[tauri::command]
-fn git_pull(state: State<'_, AppState>) -> Result<String, String> {
+fn rename_branch(state: State<'_, AppState>, old_name: String, new_name: String) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    run_git(&repo, &["pull"]).map(|s| if s.is_empty() { "ok".into() } else { s })
+    run_git(&repo, &["branch", "-m", &old_name, &new_name])
+}
+
+#[tauri::command]
+fn delete_branch(state: State<'_, AppState>, name: String, force: bool) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    if force {
+        run_git(&repo, &["branch", "-D", &name])
+    } else {
+        run_git(&repo, &["branch", "-d", &name])
+    }
+}
+
+#[tauri::command]
+fn merge_branch(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["merge", &name])
+}
+
+#[tauri::command]
+fn checkout_branch(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["checkout", &name])
+}
+
+#[tauri::command]
+fn checkout_remote_branch(state: State<'_, AppState>, remote: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let local = remote.split('/').last().unwrap_or(&remote);
+    run_git(&repo, &["checkout", "-b", local, "--track", &remote])
+}
+
+#[tauri::command]
+async fn git_fetch(state: State<'_, AppState>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let result = tokio::task::spawn_blocking(move || run_git(&repo, &["fetch"]))
+        .await
+        .map_err(|e| format!("task failed: {e}"))?;
+    result.map(|s| if s.is_empty() { "ok".into() } else { s })
+}
+
+#[tauri::command]
+fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
+    let repo = require_repo(&state)?;
+    let branch = run_git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim().to_string();
+    if branch == "HEAD" {
+        return Ok(AheadBehind { ahead: 0, behind: 0 });
+    }
+    let upstream = match run_git(&repo, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]) {
+        Ok(u) => u.trim().to_string(),
+        Err(_) => return Ok(AheadBehind { ahead: 0, behind: 0 }),
+    };
+    let output = run_git(&repo, &["rev-list", "--count", "--left-right", &format!("{upstream}...HEAD")])?;
+    let trimmed = output.trim();
+    let parts: Vec<&str> = trimmed.split('\t').collect();
+    let behind = parts.first().unwrap_or(&"0").parse().unwrap_or(0);
+    let ahead = parts.get(1).copied().unwrap_or("0").parse().unwrap_or(0);
+    Ok(AheadBehind { ahead, behind })
+}
+
+#[tauri::command]
+async fn git_push(state: State<'_, AppState>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let result = tokio::task::spawn_blocking(move || run_git(&repo, &["push"]))
+        .await
+        .map_err(|e| format!("task failed: {e}"))?;
+    result.map(|s| if s.is_empty() { "ok".into() } else { s })
+}
+
+#[tauri::command]
+async fn git_pull(state: State<'_, AppState>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let result = tokio::task::spawn_blocking(move || run_git(&repo, &["pull"]))
+        .await
+        .map_err(|e| format!("task failed: {e}"))?;
+    result.map(|s| if s.is_empty() { "ok".into() } else { s })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -338,6 +469,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_repository,
             get_repo_path,
+            get_recent_repos,
+            switch_repository,
             get_git_status,
             stage_file,
             unstage_file,
@@ -346,6 +479,13 @@ pub fn run() {
             get_git_log,
             get_branches,
             get_commit_diff,
+            rename_branch,
+            delete_branch,
+            merge_branch,
+            checkout_branch,
+            checkout_remote_branch,
+            git_fetch,
+            get_ahead_behind,
             git_push,
             git_pull,
         ])

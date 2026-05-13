@@ -6,17 +6,39 @@ defineProps<{
   logs: CommitLog[]
   loading: boolean
   selectedHash: string | null
+  filter: 'current' | 'all'
+  currentBranch: string
 }>()
 
 const emit = defineEmits<{
   selectCommit: [hash: string]
+  updateFilter: [filter: 'current' | 'all']
 }>()
 </script>
 
 <template>
   <div class="h-full flex flex-col bg-[--bg-secondary]">
-    <div class="px-3 py-1.5 text-xs text-[--text-secondary] uppercase tracking-wider bg-[--bg-tertiary] border-b border-[--border-color]">
-      Commits ({{ logs.length }})
+    <!-- Header with filter toggle -->
+    <div class="flex items-center justify-between px-3 py-1.5 bg-[--bg-tertiary] border-b border-[--border-color] text-xs">
+      <span class="text-[--text-secondary] uppercase tracking-wider">
+        Commits ({{ logs.length }})
+      </span>
+      <div class="flex items-center gap-1">
+        <button
+          class="px-2 py-0.5 rounded text-[11px] transition-colors"
+          :class="filter === 'current'
+            ? 'bg-[--accent] text-white font-medium'
+            : 'text-[--text-secondary] hover:text-[--text-primary]'"
+          @click="emit('updateFilter', 'current')"
+        >{{ currentBranch || '当前' }}</button>
+        <button
+          class="px-2 py-0.5 rounded text-[11px] transition-colors"
+          :class="filter === 'all'
+            ? 'bg-[--accent] text-white font-medium'
+            : 'text-[--text-secondary] hover:text-[--text-primary]'"
+          @click="emit('updateFilter', 'all')"
+        >全部</button>
+      </div>
     </div>
 
     <div v-if="loading" class="flex items-center justify-center py-12 text-[--text-secondary]">
