@@ -61,8 +61,23 @@ fn set_git_utf8_env(cmd: &mut Command) {
     }
 }
 
+/// Windows GUI 进程默认会给子进程分配控制台，导致每次 `git` 都会闪一下黑框。
+fn hide_git_child_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new("git");
+    hide_git_child_console(&mut cmd);
     cmd.current_dir(repo);
     cmd.args(args);
     set_git_utf8_env(&mut cmd);
@@ -118,6 +133,32 @@ fn save_recent_repos(app: &tauri::AppHandle, repos: &[String]) -> Result<(), Str
     fs::write(&path, &json).map_err(|e| format!("write error: {e}"))?;
     Ok(())
 }
+
+fn last_repo_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("failed to create app data dir: {e}"))?;
+    Ok(dir.join("last_repo.txt"))
+}
+
+fn save_last_repo(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
+    let path_buf = last_repo_file_path(app)?;
+    fs::write(&path_buf, path).map_err(|e| format!("write error: {e}"))?;
+    Ok(())
+}
+
+fn load_last_repo(app: &tauri::AppHandle) -> Option<String> {
+    last_repo_file_path(app).ok().and_then(|p| {
+        if p.exists() {
+            fs::read_to_string(&p).ok().map(|s| s.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
 
 fn parse_porcelain_path(rest: &str) -> String {
     let rest = rest.trim_start();
@@ -181,7 +222,14 @@ fn parse_branches(raw: &str) -> Vec<BranchInfo> {
         let name = if is_current { &line[2..] } else { trimmed };
         let is_remote = name.starts_with("remotes/");
         let display_name = if is_remote { &name[8..] } else { name };
-        let is_head = head_targets.iter().any(|t| *t == display_name);
+        let is_head = if is_remote {
+            false
+        } else {
+            head_targets.iter().any(|t| {
+                let target_branch = t.split_once('/').map(|(_, b)| b).unwrap_or("");
+                target_branch == name
+            })
+        };
         out.push(BranchInfo {
             name: display_name.to_string(),
             is_current,
@@ -253,12 +301,16 @@ async fn open_repository(app: tauri::AppHandle) -> Result<String, String> {
         let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
         *guard = Some(path_str.clone());
     }
+    save_last_repo(&app, &path_str)?;
     Ok(path_str)
 }
 
 #[tauri::command]
-fn get_repo_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
+fn get_repo_path(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
+    if guard.is_none() {
+        *guard = load_last_repo(&app);
+    }
     Ok(guard.clone())
 }
 
@@ -278,6 +330,7 @@ fn switch_repository(app: tauri::AppHandle, path: String) -> Result<String, Stri
         let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
         *guard = Some(path.clone());
     }
+    save_last_repo(&app, &path)?;
     Ok(path)
 }
 

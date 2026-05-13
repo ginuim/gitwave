@@ -245,11 +245,11 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
     <div class="p-3 repo-dropdown relative">
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors truncate"
-        @click.stop="toggleDropdown"
+        @click.stop="repoPath ? toggleDropdown() : selectOpenOther()"
       >
         <FolderOpen :size="16" class="flex-shrink-0" />
         <span class="truncate flex-1 text-left">{{ repoPath ? repoPath.split('/').pop() || repoPath : '打开本地仓库' }}</span>
-        <ChevronDownIcon :size="14" class="flex-shrink-0" />
+        <ChevronDownIcon v-if="repoPath" :size="14" class="flex-shrink-0" />
       </button>
 
       <!-- Dropdown menu -->
@@ -411,8 +411,6 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
             />
           </button>
 
-          <div v-if="node.isLeaf" class="w-5 flex-shrink-0" />
-
           <GitBranch v-if="node.isLeaf" :size="11" class="flex-shrink-0" />
 
           <span class="truncate">{{ node.label }}</span>
@@ -456,8 +454,6 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
               class="text-[--text-secondary]"
             />
           </button>
-
-          <div v-if="node.isLeaf" class="w-5 flex-shrink-0" />
 
           <Globe v-if="node.isLeaf" :size="11" class="flex-shrink-0" />
 
