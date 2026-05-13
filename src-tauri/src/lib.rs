@@ -421,6 +421,16 @@ async fn git_fetch(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn stage_patch(state: State<'_, AppState>, patch: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let tmp = std::env::temp_dir().join(format!("gitwave_patch_{}", std::process::id()));
+    std::fs::write(&tmp, &patch).map_err(|e| format!("failed to write patch: {e}"))?;
+    let result = run_git(&repo, &["apply", "--cached", tmp.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+#[tauri::command]
 fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
     let repo = require_repo(&state)?;
     let branch = run_git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
@@ -479,6 +489,7 @@ pub fn run() {
             get_git_log,
             get_branches,
             get_commit_diff,
+            stage_patch,
             rename_branch,
             delete_branch,
             merge_branch,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { FilePlus, FileMinus, GitCommitVertical, FileCode, Loader2 } from 'lucide-vue-next'
+import { FilePlus, FileMinus, GitCommitVertical, Loader2 } from 'lucide-vue-next'
 import type { FileStatus } from '../types'
 
 defineProps<{
@@ -33,8 +33,13 @@ const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStage
   <div class="h-full flex flex-col bg-[--bg-secondary]">
     <!-- Unstaged Changes -->
     <div class="flex-1 overflow-y-auto min-h-0">
-      <div class="px-3 py-1.5 text-xs text-[--text-secondary] uppercase tracking-wider bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10">
-        Unstaged Changes ({{ unstagedFiles(statuses).length }})
+      <div class="flex items-center justify-between px-3 py-1.5 text-xs text-[--text-secondary] uppercase tracking-wider bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10">
+        <span>Unstaged ({{ unstagedFiles(statuses).length }})</span>
+        <button
+          v-if="unstagedFiles(statuses).length > 0"
+          class="text-[10px] px-1.5 py-0.5 rounded text-[--diff-added-text] hover:bg-[--diff-added] transition-colors"
+          @click="unstagedFiles(statuses).forEach(f => emit('stageFile', f.path))"
+        >全部暂存</button>
       </div>
       <div v-if="statusLoading" class="flex items-center justify-center py-8 text-[--text-secondary]">
         <Loader2 :size="16" class="animate-spin mr-2" />
@@ -47,26 +52,30 @@ const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStage
         <div
           v-for="file in unstagedFiles(statuses)"
           :key="file.path"
-          class="flex items-center gap-1 px-3 py-1.5 text-xs border-b border-[--border-color] cursor-pointer hover:bg-[--bg-tertiary] transition-colors"
-          :class="{ 'bg-[--bg-tertiary]': selectedFile === file.path }"
+          class="flex items-center gap-1.5 px-3 py-2 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
+          :class="{ 'bg-green-900/20': selectedFile === file.path }"
           @click="emit('selectFile', file.path, file.isStaged)"
         >
           <button
-            class="flex-shrink-0 p-0.5 rounded text-[--diff-added-text] hover:text-green-300 transition-colors"
-            title="暂存"
+            class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded bg-green-700/60 hover:bg-green-600 text-white transition-colors"
+            title="暂存此文件"
             @click.stop="emit('stageFile', file.path)"
           >
             <FilePlus :size="14" />
           </button>
-          <FileCode :size="13" class="flex-shrink-0 text-[--text-secondary]" />
-          <span class="truncate flex-1">{{ file.path }}</span>
+          <span class="truncate flex-1 hover:text-[--accent] transition-colors">{{ file.path }}</span>
           <span class="flex-shrink-0 text-[--diff-removed-text] font-mono">{{ file.status }}</span>
         </div>
       </div>
 
       <!-- Staged Changes -->
-      <div class="px-3 py-1.5 text-xs text-[--text-secondary] uppercase tracking-wider bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10">
-        Staged Changes ({{ stagedFiles(statuses).length }})
+      <div class="flex items-center justify-between px-3 py-1.5 text-xs text-[--text-secondary] uppercase tracking-wider bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10">
+        <span>Staged ({{ stagedFiles(statuses).length }})</span>
+        <button
+          v-if="stagedFiles(statuses).length > 0"
+          class="text-[10px] px-1.5 py-0.5 rounded text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors"
+          @click="stagedFiles(statuses).forEach(f => emit('unstageFile', f.path))"
+        >全部撤销</button>
       </div>
       <div v-if="stagedFiles(statuses).length === 0" class="px-4 py-3 text-xs text-[--text-secondary]">
         没有已暂存的变更
@@ -75,19 +84,18 @@ const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStage
         <div
           v-for="file in stagedFiles(statuses)"
           :key="file.path"
-          class="flex items-center gap-1 px-3 py-1.5 text-xs border-b border-[--border-color] cursor-pointer hover:bg-[--bg-tertiary] transition-colors"
-          :class="{ 'bg-[--bg-tertiary]': selectedFile === file.path }"
+          class="flex items-center gap-1.5 px-3 py-2 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
+          :class="{ 'bg-red-900/20': selectedFile === file.path }"
           @click="emit('selectFile', file.path, file.isStaged)"
         >
           <button
-            class="flex-shrink-0 p-0.5 rounded text-[--diff-removed-text] hover:text-red-300 transition-colors"
-            title="取消暂存"
+            class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded bg-red-700/60 hover:bg-red-600 text-white transition-colors"
+            title="撤销暂存"
             @click.stop="emit('unstageFile', file.path)"
           >
             <FileMinus :size="14" />
           </button>
-          <FileCode :size="13" class="flex-shrink-0 text-[--text-secondary]" />
-          <span class="truncate flex-1">{{ file.path }}</span>
+          <span class="truncate flex-1 hover:text-[--accent] transition-colors">{{ file.path }}</span>
           <span class="flex-shrink-0 text-[--diff-added-text] font-mono">{{ file.status }}</span>
         </div>
       </div>

@@ -23,6 +23,8 @@ const diffFileName = computed(() => {
   return selectedFile.value
 })
 
+const canStage = computed(() => !selectedCommitHash.value && !!selectedFile.value)
+
 const branches = ref<BranchInfo[]>([])
 const branchesLoading = ref(false)
 const recentRepos = ref<string[]>([])
@@ -181,6 +183,24 @@ async function selectFile(path: string, isStaged: boolean) {
     diffText.value = await invoke<string>('get_file_diff', { path, isStaged })
   } catch (e: any) {
     diffText.value = ''
+    showToast(String(e))
+  }
+}
+
+// Stage a patch (hunk or selected lines)
+async function handleStagePatch(patch: string) {
+  try {
+    await invoke('stage_patch', { patch })
+    showToast('已暂存', 'success')
+    await refreshStatus()
+    // Re-fetch diff to reflect staged state
+    if (selectedFile.value) {
+      diffText.value = await invoke<string>('get_file_diff', {
+        path: selectedFile.value,
+        isStaged: false,
+      })
+    }
+  } catch (e: any) {
     showToast(String(e))
   }
 }
@@ -400,6 +420,10 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
       <DiffPanel
         :diff-text="diffText"
         :file-name="diffFileName"
+        :can-stage="!selectedCommitHash && !!selectedFile"
+        :file-path="canStage ? selectedFile : null"
+        @stage-patch="handleStagePatch"
+        @stage-file="stageFile"
       />
     </Pane>
   </Splitpanes>
