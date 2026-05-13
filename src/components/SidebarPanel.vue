@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import {
   FolderOpen, GitBranch, Globe, ArrowUp, ArrowDown,
-  List, History, Loader2, ChevronRight, ChevronDown,
+  List, History, Loader2, ChevronRight, ChevronDown, Plus,
   ChevronDown as ChevronDownIcon,
 } from 'lucide-vue-next'
 import type { BranchInfo, AheadBehind } from '../types'
@@ -28,6 +28,7 @@ const emit = defineEmits<{
   renameBranch: [oldName: string, newName: string]
   deleteBranch: [name: string]
   mergeBranch: [name: string]
+  createBranch: [name: string]
   fetch: []
   push: []
   pull: []
@@ -67,6 +68,30 @@ function handleContextMenu(e: MouseEvent, branch: string, isCurrent: boolean) {
 
 function closeCtxMenu() {
   ctxMenu.value = null
+}
+
+// --- Create branch dialog ---
+const createBranchDialog = ref(false)
+const newBranchName = ref('')
+const createBranchInput = ref<HTMLInputElement | null>(null)
+
+function openCreateBranch() {
+  createBranchDialog.value = true
+  newBranchName.value = ''
+  setTimeout(() => createBranchInput.value?.focus(), 50)
+}
+
+function submitCreateBranch() {
+  const name = newBranchName.value.trim()
+  if (!name) return
+  emit('createBranch', name)
+  createBranchDialog.value = false
+  newBranchName.value = ''
+}
+
+function cancelCreateBranch() {
+  createBranchDialog.value = false
+  newBranchName.value = ''
 }
 
 // --- Rename dialog ---
@@ -336,6 +361,14 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
           class="absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center px-1 rounded-full text-[10px] font-semibold bg-[--accent] text-white leading-none"
         >{{ aheadBehind.ahead }}</span>
       </button>
+      <button
+        class="flex items-center gap-1 px-2 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors ml-auto"
+        title="从当前分支新建分支"
+        @click.stop="openCreateBranch"
+      >
+        <Plus :size="14" />
+        <span class="hidden sm:inline">分支</span>
+      </button>
     </div>
 
     <!-- Branch tree -->
@@ -464,6 +497,41 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
             @click="ctxDelete"
           >删除</button>
         </template>
+      </div>
+    </Teleport>
+
+    <!-- Create branch dialog -->
+    <Teleport to="body">
+      <div
+        v-if="createBranchDialog"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="cancelCreateBranch"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-lg shadow-2xl p-4 w-80"
+          @click.stop
+        >
+          <div class="text-sm text-[--text-primary] mb-3 font-medium">新建分支</div>
+          <div class="text-xs text-[--text-secondary] mb-2">从当前分支创建新分支</div>
+          <input
+            ref="createBranchInput"
+            v-model="newBranchName"
+            placeholder="输入分支名称..."
+            class="w-full px-3 py-1.5 rounded bg-[--bg-secondary] border border-[--border-color] text-sm text-[--text-primary] outline-none focus:border-[--accent] transition-colors"
+            @keydown.enter="submitCreateBranch"
+            @keydown.escape="cancelCreateBranch"
+          />
+          <div class="flex justify-end gap-2 mt-3">
+            <button
+              class="px-3 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors"
+              @click="cancelCreateBranch"
+            >取消</button>
+            <button
+              class="px-3 py-1 rounded text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors"
+              @click="submitCreateBranch"
+            >创建</button>
+          </div>
+        </div>
       </div>
     </Teleport>
 

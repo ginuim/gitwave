@@ -317,6 +317,19 @@ async function mergeBranch(name: string) {
   }
 }
 
+async function createBranch(name: string) {
+  try {
+    await invoke('create_branch', { name })
+    showToast(`已切换到新分支「${name}」`, 'success')
+    selectedFile.value = null
+    selectedCommitHash.value = null
+    diffText.value = ''
+    await Promise.all([refreshBranches(), refreshStatus(), refreshAheadBehind()])
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
 // Fetch
 async function gitFetch() {
   fetchLoading.value = true
@@ -350,10 +363,23 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
   if (tab === 'history') {
     await refreshHistory()
   } else {
+    // Refresh workspace state (files may have changed externally)
+    await syncRefresh()
     // Clear commit selection when switching back to workspace
     selectedCommitHash.value = null
     selectedCommitMsg.value = ''
-    if (!selectedFile.value) {
+    // Re-fetch diff for the selected file if still relevant
+    if (selectedFile.value && statuses.value.some(s => s.path === selectedFile.value)) {
+      try {
+        diffText.value = await invoke<string>('get_file_diff', {
+          path: selectedFile.value,
+          isStaged: false,
+        })
+      } catch {
+        diffText.value = ''
+      }
+    } else {
+      selectedFile.value = null
       diffText.value = ''
     }
   }
@@ -382,6 +408,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @rename-branch="renameBranch"
         @delete-branch="deleteBranch"
         @merge-branch="mergeBranch"
+        @create-branch="createBranch"
         @fetch="gitFetch"
         @push="gitPush"
         @pull="gitPull"

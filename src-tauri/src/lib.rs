@@ -399,6 +399,12 @@ fn merge_branch(state: State<'_, AppState>, name: String) -> Result<String, Stri
 }
 
 #[tauri::command]
+fn create_branch(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["checkout", "-b", &name])
+}
+
+#[tauri::command]
 fn checkout_branch(state: State<'_, AppState>, name: String) -> Result<String, String> {
     let repo = require_repo(&state)?;
     run_git(&repo, &["checkout", &name])
@@ -493,6 +499,7 @@ pub fn run() {
             rename_branch,
             delete_branch,
             merge_branch,
+            create_branch,
             checkout_branch,
             checkout_remote_branch,
             git_fetch,
