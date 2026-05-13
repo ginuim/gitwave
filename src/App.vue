@@ -504,7 +504,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
     <Transition name="toast">
       <div
         v-if="toast"
-        class="fixed bottom-6 right-6 z-[9999] px-5 py-3 rounded-lg shadow-2xl text-sm max-w-md break-words"
+        class="fixed bottom-2.5 right-2.5 z-[9999] px-2.5 py-2.5 rounded shadow-lg text-xs max-w-sm break-words"
         :class="toast.type === 'error'
           ? 'bg-red-800 text-red-100 border border-red-700'
           : 'bg-green-800 text-green-100 border border-green-700'"

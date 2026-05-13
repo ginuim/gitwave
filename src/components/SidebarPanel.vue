@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import {
-  FolderOpen, GitBranch, Globe, ArrowUp, ArrowDown,
+  FolderOpen, GitBranch, Globe,
   List, History, Loader2, ChevronRight, ChevronDown, Plus,
   ChevronDown as ChevronDownIcon,
+  RefreshCw, ArrowDownToLine, ArrowUpToLine,
 } from 'lucide-vue-next'
 import type { BranchInfo, AheadBehind } from '../types'
 
@@ -247,12 +248,12 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
     @contextmenu="closeCtxMenu"
   >
     <!-- Repo selector dropdown -->
-    <div class="p-3 repo-dropdown relative">
+    <div class="p-2.5 repo-dropdown relative">
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors truncate"
+        class="w-full flex items-center gap-2 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors truncate cursor-pointer"
         @click.stop="repoPath ? toggleDropdown() : selectOpenOther()"
       >
-        <FolderOpen :size="16" class="flex-shrink-0" />
+        <FolderOpen :size="14" class="flex-shrink-0" />
         <span class="truncate flex-1 text-left">{{ repoPath ? dirName(repoPath) : '打开本地仓库' }}</span>
         <ChevronDownIcon v-if="repoPath" :size="14" class="flex-shrink-0" />
       </button>
@@ -260,12 +261,12 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
       <!-- Dropdown menu -->
       <div
         v-if="dropdownOpen"
-        class="absolute left-3 right-3 top-full mt-1 bg-[--bg-tertiary] border border-[--border-color] rounded shadow-lg z-50 max-h-60 overflow-y-auto text-xs"
+        class="absolute left-2.5 right-2.5 top-full mt-1 bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-md z-50 max-h-52 overflow-y-auto text-xs"
       >
         <div
           v-for="path in recentRepos"
           :key="path"
-          class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[--accent] hover:text-white transition-colors truncate"
+          class="flex items-center gap-2 px-2.5 py-2.5 cursor-pointer hover:bg-[--accent] hover:text-white transition-colors truncate"
           :class="path === repoPath ? 'text-[--accent] font-medium' : 'text-[--text-primary]'"
           @click.stop="selectPath(path)"
         >
@@ -275,11 +276,11 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
 
         <div
           v-if="recentRepos.length > 0"
-          class="h-px bg-[--border-color] mx-2"
+          class="h-px bg-[--border-color] mx-2.5"
         />
 
         <div
-          class="flex items-center gap-2 px-3 py-2 cursor-pointer text-[--text-secondary] hover:bg-[--accent] hover:text-white transition-colors"
+          class="flex items-center gap-2 px-2.5 py-2.5 cursor-pointer text-[--text-secondary] hover:bg-[--accent] hover:text-white transition-colors"
           @click.stop="selectOpenOther"
         >
           <FolderOpen :size="13" class="flex-shrink-0" />
@@ -289,7 +290,7 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
 
       <div
         v-if="repoPath"
-        class="text-[10px] text-[--text-secondary] px-1 mt-1 truncate"
+        class="text-[10px] text-[--text-secondary] px-2.5 mt-1 truncate font-mono-ui"
         :title="repoPath"
       >
         {{ repoPath }}
@@ -299,31 +300,31 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
     <!-- Tab Switcher -->
     <div class="flex border-b border-[--border-color]">
       <button
-        class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs transition-colors"
+        class="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs transition-colors cursor-pointer"
         :class="activeTab === 'workspace'
           ? 'text-[--text-primary] border-b-2 border-[--accent]'
           : 'text-[--text-secondary] hover:text-[--text-primary]'"
         @click="emit('switchTab', 'workspace')"
       >
-        <List :size="14" />
+        <List :size="12" />
         <span>工作区</span>
       </button>
       <button
-        class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs transition-colors"
+        class="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs transition-colors cursor-pointer"
         :class="activeTab === 'history'
           ? 'text-[--text-primary] border-b-2 border-[--accent]'
           : 'text-[--text-secondary] hover:text-[--text-primary]'"
         @click="emit('switchTab', 'history')"
       >
-        <History :size="14" />
+        <History :size="12" />
         <span>历史</span>
       </button>
     </div>
 
-    <!-- Fetch / Push / Pull -->
-    <div v-if="repoPath" class="flex gap-1 px-3 py-2 border-b border-[--border-color]">
+    <!-- Fetch / Push / Pull / Branch -->
+    <div v-if="repoPath" class="flex flex-wrap gap-1 px-2.5 py-1 border-b border-[--border-color]">
       <button
-        class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
+        class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius)] text-xs transition-colors whitespace-nowrap cursor-pointer"
         :class="fetchLoading
           ? 'text-[--accent] bg-[--bg-tertiary] cursor-wait'
           : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
@@ -331,11 +332,11 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         @click="emit('fetch')"
       >
         <Loader2 v-if="fetchLoading" :size="12" class="animate-spin flex-shrink-0" />
-        <ArrowDown v-else :size="14" class="flex-shrink-0" />
+        <RefreshCw v-else :size="12" class="flex-shrink-0" />
         <span>Fetch</span>
       </button>
       <button
-        class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors relative"
+        class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius)] text-xs transition-colors relative whitespace-nowrap cursor-pointer"
         :class="pullLoading
           ? 'text-[--accent] bg-[--bg-tertiary] cursor-wait'
           : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
@@ -343,15 +344,15 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         @click="emit('pull')"
       >
         <Loader2 v-if="pullLoading" :size="12" class="animate-spin flex-shrink-0" />
-        <ArrowDown v-else :size="14" class="flex-shrink-0" />
+        <ArrowDownToLine v-else :size="12" class="flex-shrink-0" />
         <span>Pull</span>
         <span
           v-if="!pullLoading && aheadBehind.behind > 0"
-          class="absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center px-1 rounded-full text-[10px] font-semibold bg-[--accent] text-white leading-none"
+          class="absolute -top-0.5 -right-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none bg-[--accent] text-white"
         >{{ aheadBehind.behind }}</span>
       </button>
       <button
-        class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors relative"
+        class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius)] text-xs transition-colors relative whitespace-nowrap cursor-pointer"
         :class="pushLoading
           ? 'text-[--accent] bg-[--bg-tertiary] cursor-wait'
           : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
@@ -359,27 +360,27 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         @click="emit('push')"
       >
         <Loader2 v-if="pushLoading" :size="12" class="animate-spin flex-shrink-0" />
-        <ArrowUp v-else :size="14" class="flex-shrink-0" />
+        <ArrowUpToLine v-else :size="12" class="flex-shrink-0" />
         <span>Push</span>
         <span
           v-if="!pushLoading && aheadBehind.ahead > 0"
-          class="absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center px-1 rounded-full text-[10px] font-semibold bg-[--accent] text-white leading-none"
+          class="absolute -top-0.5 -right-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none bg-[--accent] text-white"
         >{{ aheadBehind.ahead }}</span>
       </button>
       <button
-        class="flex items-center gap-1 px-2 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors ml-auto"
+        class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors whitespace-nowrap cursor-pointer"
         title="从当前分支新建分支"
         @click.stop="openCreateBranch"
       >
-        <Plus :size="14" />
-        <span class="hidden sm:inline">分支</span>
+        <GitBranch :size="12" />
+        <span>分支</span>
       </button>
     </div>
 
     <!-- Branch tree -->
-    <div class="flex-1 overflow-y-auto p-3 pt-1">
+    <div class="flex-1 overflow-y-auto px-2.5 pb-2.5 pt-1">
 
-      <div v-if="branchesLoading" class="flex items-center gap-2 pl-1 py-2 text-xs text-[--text-secondary]">
+      <div v-if="branchesLoading" class="flex items-center gap-1.5 pl-2 py-1 text-xs text-[--text-secondary]">
         <Loader2 :size="12" class="animate-spin" />
         <span>加载中...</span>
       </div>
@@ -389,19 +390,19 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         <div
           v-for="node in localBranches"
           :key="node.key"
-          class="flex items-center gap-1 rounded text-xs"
+          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2"
           :class="node.isLeaf
             ? (node.isCurrent
               ? 'text-[--accent] font-medium cursor-default'
               : 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]')
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
-          :style="{ paddingLeft: (node.depth * 14 + 4) + 'px' }"
+          :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
           @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', node.label)"
           @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, node.label, node.isCurrent)"
         >
           <button
             v-if="!node.isLeaf"
-            class="flex-shrink-0 p-0.5 rounded hover:bg-[--bg-tertiary]"
+            class="flex-shrink-0 p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer"
             @click.stop="toggleGroup(node.key)"
           >
             <ChevronRight
@@ -416,19 +417,19 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
             />
           </button>
 
-          <GitBranch v-if="node.isLeaf" :size="11" class="flex-shrink-0" />
+          <GitBranch v-if="node.isLeaf" :size="12" class="flex-shrink-0" />
 
           <span class="truncate">{{ node.label }}</span>
-          <span
+          <!-- <span
             v-if="node.isHead"
-            class="flex-shrink-0 ml-1 px-1 rounded text-[9px] font-semibold bg-[--accent] text-white leading-tight"
-          >HEAD</span>
+            class="flex-shrink-0 ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[--accent] text-white leading-none"
+          >HEAD</span> -->
         </div>
 
         <!-- Remote branches -->
         <div
           v-if="remoteBranches.length > 0"
-          class="flex items-center gap-1.5 mt-3 mb-1 pl-1 text-[10px] text-[--text-secondary] uppercase tracking-wider"
+          class="flex items-center gap-1.5 mt-1 mb-0.5 pl-2 text-[10px] text-[--text-secondary] uppercase tracking-wide"
         >
           <Globe :size="10" />
           <span>远程</span>
@@ -436,16 +437,16 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         <div
           v-for="node in remoteBranches"
           :key="node.key"
-          class="flex items-center gap-1 rounded text-xs"
+          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2"
           :class="node.isLeaf
             ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
-          :style="{ paddingLeft: (node.depth * 14 + 4) + 'px' }"
+          :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
           @click="node.isLeaf && emit('checkoutRemote', node.key)"
         >
           <button
             v-if="!node.isLeaf"
-            class="flex-shrink-0 p-0.5 rounded hover:bg-[--bg-tertiary]"
+            class="flex-shrink-0 p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer"
             @click.stop="toggleGroup(node.key)"
           >
             <ChevronRight
@@ -460,17 +461,17 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
             />
           </button>
 
-          <Globe v-if="node.isLeaf" :size="11" class="flex-shrink-0" />
+          <Globe v-if="node.isLeaf" :size="12" class="flex-shrink-0" />
 
           <span class="truncate">{{ node.label }}</span>
           <span
             v-if="node.isHead"
-            class="flex-shrink-0 ml-1 px-1 rounded text-[9px] font-semibold bg-[--accent] text-white leading-tight"
+            class="flex-shrink-0 ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[--accent] text-white leading-none"
           >HEAD</span>
         </div>
       </template>
 
-      <div v-else class="text-xs text-[--text-secondary] pl-1">
+      <div v-else class="text-xs text-[--text-secondary] pl-2 py-1">
         尚未打开仓库
       </div>
     </div>
@@ -479,22 +480,22 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
     <Teleport to="body">
       <div
         v-if="ctxMenu"
-        class="fixed z-[9999] bg-[--bg-tertiary] border border-[--border-color] rounded shadow-xl py-1 text-xs min-w-[120px]"
+        class="fixed z-[9999] bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-lg p-2.5 text-xs min-w-[120px]"
         :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
         @click.stop
       >
         <button
-          class="w-full text-left px-3 py-1.5 text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors"
+          class="w-full text-left px-2.5 py-2.5 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
           @click="ctxRename"
         >重命名</button>
         <template v-if="!ctxMenu.isCurrent">
-          <div class="h-px bg-[--border-color] mx-2" />
+          <div class="h-px bg-[--border-color] my-2" />
           <button
-            class="w-full text-left px-3 py-1.5 text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors"
+            class="w-full text-left px-2.5 py-2.5 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
             @click="ctxMerge"
           >合并到当前分支</button>
           <button
-            class="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-700 hover:text-white transition-colors"
+            class="w-full text-left px-2.5 py-2.5 rounded-[var(--radius)] text-red-400 hover:bg-red-700 hover:text-white transition-colors cursor-pointer"
             @click="ctxDelete"
           >删除</button>
         </template>
@@ -509,26 +510,26 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         @click="cancelCreateBranch"
       >
         <div
-          class="bg-[--bg-tertiary] border border-[--border-color] rounded-lg shadow-2xl p-4 w-80"
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[280px]"
           @click.stop
         >
-          <div class="text-sm text-[--text-primary] mb-3 font-medium">新建分支</div>
-          <div class="text-xs text-[--text-secondary] mb-2">从当前分支创建新分支</div>
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">新建分支</div>
+          <div class="text-[10px] text-[--text-secondary] mb-2">从当前分支创建新分支</div>
           <input
             ref="createBranchInput"
             v-model="newBranchName"
             placeholder="输入分支名称..."
-            class="w-full px-3 py-1.5 rounded bg-[--bg-secondary] border border-[--border-color] text-sm text-[--text-primary] outline-none focus:border-[--accent] transition-colors"
+            class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
             @keydown.enter="submitCreateBranch"
             @keydown.escape="cancelCreateBranch"
           />
-          <div class="flex justify-end gap-2 mt-3">
+          <div class="flex justify-end gap-2 mt-2.5">
             <button
-              class="px-3 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors"
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
               @click="cancelCreateBranch"
             >取消</button>
             <button
-              class="px-3 py-1 rounded text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors"
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer"
               @click="submitCreateBranch"
             >创建</button>
           </div>
@@ -544,25 +545,25 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         @click="cancelRename"
       >
         <div
-          class="bg-[--bg-tertiary] border border-[--border-color] rounded-lg shadow-2xl p-4 w-80"
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[280px]"
           @click.stop
         >
-          <div class="text-sm text-[--text-primary] mb-3 font-medium">重命名分支</div>
-          <div class="text-xs text-[--text-secondary] mb-2">{{ renameDialog.branch }}</div>
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">重命名分支</div>
+          <div class="text-[10px] text-[--text-secondary] mb-2 font-mono-ui">{{ renameDialog.branch }}</div>
           <input
             ref="renameInput"
             v-model="renameDialog.value"
-            class="w-full px-3 py-1.5 rounded bg-[--bg-secondary] border border-[--border-color] text-sm text-[--text-primary] outline-none focus:border-[--accent] transition-colors"
+            class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
             @keydown.enter="submitRename"
             @keydown.escape="cancelRename"
           />
-          <div class="flex justify-end gap-2 mt-3">
+          <div class="flex justify-end gap-2 mt-2.5">
             <button
-              class="px-3 py-1 rounded text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors"
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
               @click="cancelRename"
             >取消</button>
             <button
-              class="px-3 py-1 rounded text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors"
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer"
               @click="submitRename"
             >确定</button>
           </div>

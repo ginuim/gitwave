@@ -562,35 +562,35 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
 <template>
   <div class="h-full flex flex-col bg-[--bg-primary]">
     <!-- Diff header bar -->
-    <div class="px-4 py-2 text-xs text-[--text-secondary] border-b border-[--border-color] flex items-center gap-2 flex-shrink-0">
-      <span v-if="fileName" class="text-[--text-primary] font-medium truncate">{{ fileName }}</span>
-      <span v-else class="text-[--text-secondary]">选择文件查看差异</span>
-      <span v-if="sections.length > 1" class="ml-auto text-[--text-secondary]">{{ sections.length }} 个文件</span>
+    <div class="px-2.5 py-2.5 text-xs text-[--text-secondary] border-b border-[--border-color] flex items-center gap-2 flex-shrink-0 min-w-0">
+      <span v-if="fileName" class="text-[--text-primary] font-medium truncate font-mono-ui min-w-0 flex-1">{{ fileName }}</span>
+      <span v-else class="text-[--text-secondary] shrink-0">选择文件查看差异</span>
+      <span v-if="sections.length > 1" class="text-[10px] text-[--text-secondary] font-mono-ui shrink-0">{{ sections.length }} 个文件</span>
       <!-- Stage selected lines button -->
       <button
         v-if="canStage && selectedLineIds.size > 0"
-        class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-green-700 text-white hover:bg-green-600 transition-colors"
+        class="ml-auto flex shrink-0 items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700 text-white hover:bg-green-600 transition-colors cursor-pointer"
         @click="stageSelectedLines"
       >
-        <FilePlus :size="11" />
+        <FilePlus :size="12" />
         暂存选中 ({{ selectedLineIds.size }})
       </button>
     </div>
 
     <!-- Diff content -->
     <div class="flex-1 overflow-y-auto" @mousedown="onDiffSurfacePointerDown">
-      <div v-if="!diffText" class="p-4 text-[--text-secondary] text-sm">
+      <div v-if="!diffText" class="p-2.5 text-[--text-secondary] text-xs">
         <template v-if="fileName">没有差异内容</template>
         <template v-else>点击左侧文件查看变更</template>
       </div>
 
       <template v-else>
         <!-- Commit info (from git show) -->
-        <div v-if="commitInfo" class="px-4 py-3 border-b border-[--border-color] bg-[--bg-secondary]">
+        <div v-if="commitInfo" class="px-2.5 py-2.5 border-b border-[--border-color] bg-[--bg-secondary]">
           <div class="flex items-center gap-2 mb-2">
-            <span class="text-xs font-mono text-[--accent] font-medium">{{ commitInfo.hash }}</span>
+            <span class="text-xs font-mono-ui text-[--accent] font-medium">{{ commitInfo.hash }}</span>
           </div>
-          <div class="flex items-center gap-4 text-[11px] text-[--text-secondary] mb-2">
+          <div class="flex items-center flex-wrap gap-x-3 gap-y-1 text-[10px] text-[--text-secondary] mb-2">
             <span class="flex items-center gap-1">
               <User :size="12" />
               {{ commitInfo.author }}
@@ -600,7 +600,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
               {{ commitInfo.date }}
             </span>
           </div>
-          <div class="text-sm text-[--text-primary] font-medium leading-relaxed whitespace-pre-wrap">
+          <div class="text-xs text-[--text-primary] font-medium leading-relaxed whitespace-pre-wrap">
             {{ commitInfo.message }}
           </div>
         </div>
@@ -610,42 +610,42 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
           v-if="binaryImageEntries.length > 0"
           class="border-b border-[--border-color] bg-[--bg-secondary]"
         >
-          <div class="px-4 py-2 text-[11px] text-[--text-secondary] border-b border-[--border-color]">
+          <div class="px-2.5 py-2.5 text-[10px] text-[--text-secondary] border-b border-[--border-color] uppercase tracking-wide">
             图片二进制差异
             <span v-if="binaryImagePreviewLoading" class="ml-2 text-[--accent]">加载预览中…</span>
           </div>
-          <div v-if="!repoPath" class="px-4 py-3 text-xs text-[--text-secondary]">
+          <div v-if="!repoPath" class="px-2.5 py-2.5 text-xs text-[--text-secondary]">
             未打开仓库路径，无法预览图片。
           </div>
           <template v-else>
             <div
               v-for="row in binaryImagePreviewRows"
               :key="row.fileName"
-              class="px-4 py-3 border-b border-[--border-color] last:border-b-0"
+              class="px-2.5 py-2.5 border-b border-[--border-color] last:border-b-0"
             >
-              <div class="text-xs font-medium text-[--text-primary] mb-3 truncate">{{ row.fileName }}</div>
-              <div class="flex flex-wrap gap-4">
-                <div class="flex-1 min-w-[140px] max-w-full sm:max-w-[calc(50%-0.5rem)]">
-                  <div class="text-[10px] uppercase tracking-wide text-[--text-secondary] mb-1.5">变更前</div>
+              <div class="text-xs font-medium text-[--text-primary] mb-2 truncate font-mono-ui">{{ row.fileName }}</div>
+              <div class="flex flex-wrap gap-2.5">
+                <div class="flex-1 min-w-[120px] max-w-full sm:max-w-[calc(50%-0.3125rem)]">
+                  <div class="text-[10px] uppercase tracking-wide text-[--text-secondary] mb-2">变更前</div>
                   <img
                     v-if="row.oldDataUrl"
                     :src="row.oldDataUrl"
                     alt="变更前"
-                    class="max-h-72 w-auto max-w-full rounded border border-[--border-color] object-contain bg-[--bg-tertiary]"
+                    class="max-h-56 w-auto max-w-full rounded-[var(--radius)] border border-[--border-color] object-contain bg-[--bg-tertiary]"
                   />
-                  <div v-else class="text-xs text-[--text-secondary] py-6 text-center rounded border border-dashed border-[--border-color] bg-[--bg-tertiary]/50">
+                  <div v-else class="text-xs text-[--text-secondary] p-2.5 text-center rounded-[var(--radius)] border border-dashed border-[--border-color] bg-[--bg-tertiary]/50">
                     无旧版（如新增文件）
                   </div>
                 </div>
-                <div class="flex-1 min-w-[140px] max-w-full sm:max-w-[calc(50%-0.5rem)]">
-                  <div class="text-[10px] uppercase tracking-wide text-[--text-secondary] mb-1.5">变更后</div>
+                <div class="flex-1 min-w-[120px] max-w-full sm:max-w-[calc(50%-0.3125rem)]">
+                  <div class="text-[10px] uppercase tracking-wide text-[--text-secondary] mb-2">变更后</div>
                   <img
                     v-if="row.newDataUrl"
                     :src="row.newDataUrl"
                     alt="变更后"
-                    class="max-h-72 w-auto max-w-full rounded border border-[--border-color] object-contain bg-[--bg-tertiary]"
+                    class="max-h-56 w-auto max-w-full rounded-[var(--radius)] border border-[--border-color] object-contain bg-[--bg-tertiary]"
                   />
-                  <div v-else class="text-xs text-[--text-secondary] py-6 text-center rounded border border-dashed border-[--border-color] bg-[--bg-tertiary]/50">
+                  <div v-else class="text-xs text-[--text-secondary] p-2.5 text-center rounded-[var(--radius)] border border-dashed border-[--border-color] bg-[--bg-tertiary]/50">
                     无新版（如已删除）
                   </div>
                 </div>
@@ -662,25 +662,25 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
         >
           <!-- File header bar -->
           <div
-            class="sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 bg-[--bg-tertiary] border-b border-[--border-color] cursor-pointer select-none"
+            class="sticky top-0 z-10 flex min-w-0 items-center gap-2 px-2.5 py-2.5 bg-[--bg-tertiary] border-b border-[--border-color] cursor-pointer select-none"
             @click="toggleSection(si)"
           >
             <ChevronDown v-if="!isSectionCollapsed(si)" :size="14" class="flex-shrink-0 text-[--text-secondary]" />
             <ChevronRight v-else :size="14" class="flex-shrink-0 text-[--text-secondary]" />
-            <FileCode :size="13" class="flex-shrink-0 text-[--text-secondary]" />
-            <span class="text-xs text-[--text-primary] font-medium truncate">{{ section.fileName || '差异' }}</span>
-            <div class="ml-auto flex items-center gap-2">
+            <FileCode :size="14" class="flex-shrink-0 text-[--text-secondary]" />
+            <span class="min-w-0 flex-1 truncate text-xs text-[--text-primary] font-medium font-mono-ui">{{ section.fileName || '差异' }}</span>
+            <div class="ml-2 flex shrink-0 items-center gap-2">
               <button
                 v-if="canStage"
-                class="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-green-700/70 hover:bg-green-600 text-white transition-colors"
+                class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700/70 hover:bg-green-600 text-white transition-colors cursor-pointer"
                 title="暂存整个文件"
                 @click.stop="stageEntireFile(filePath || section.fileName)"
               >
-                <FilePlus :size="11" />
+                <FilePlus :size="12" />
                 暂存文件
               </button>
-              <span class="text-[10px] text-[--diff-added-text]">{{ section.hunks.reduce((s, h) => s + h.lines.filter(l => l.type === 'added').length, 0) }} +</span>
-              <span class="text-[10px] text-[--diff-removed-text]">{{ section.hunks.reduce((s, h) => s + h.lines.filter(l => l.type === 'removed').length, 0) }} -</span>
+              <span class="text-[10px] text-[--diff-added-text] font-mono-ui">{{ section.hunks.reduce((s, h) => s + h.lines.filter(l => l.type === 'added').length, 0) }} +</span>
+              <span class="text-[10px] text-[--diff-removed-text] font-mono-ui">{{ section.hunks.reduce((s, h) => s + h.lines.filter(l => l.type === 'removed').length, 0) }} -</span>
             </div>
           </div>
 
@@ -692,33 +692,33 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
             >
               <!-- Hunk header -->
               <div
-                class="sticky top-[30px] z-[5] flex items-center gap-2 px-4 py-1 bg-[--bg-secondary] border-b border-[--border-color] cursor-pointer select-none group"
+                class="sticky top-12 z-[5] flex min-w-0 items-center gap-2 px-2.5 py-2.5 bg-[--bg-secondary] border-b border-[--border-color] cursor-pointer select-none group"
                 :class="{ 'opacity-60': isHunkCollapsed(si, hi) }"
                 @click="toggleHunk(si, hi)"
               >
                 <ChevronDown v-if="!isHunkCollapsed(si, hi)" :size="12" class="flex-shrink-0 text-[--text-secondary]" />
                 <ChevronRight v-else :size="12" class="flex-shrink-0 text-[--text-secondary]" />
-                <span class="text-[11px] font-mono text-[--text-secondary] truncate">{{ hunk.header }}</span>
+                <span class="min-w-0 flex-1 truncate text-[10px] font-mono-ui text-[--text-secondary]">{{ hunk.header }}</span>
                 <button
                   v-if="canStage"
-                  class="ml-auto flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors opacity-0 group-hover:opacity-100"
+                  class="ml-2 flex shrink-0 items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
                   title="暂存整个 @@ 块（含全部子区域）"
                   @click.stop="stageHunk(si, hi)"
                 >
-                  <FilePlus :size="11" />
+                  <FilePlus :size="12" />
                   暂存块
                 </button>
               </div>
 
               <!-- Hunk lines: @@ header + sub-blocks + gutter selection -->
-              <div v-if="!isHunkCollapsed(si, hi)" class="font-mono text-xs leading-relaxed border-b border-[--border-color]">
+              <div v-if="!isHunkCollapsed(si, hi)" class="font-mono-ui text-xs leading-relaxed border-b border-[--border-color]">
                 <div
                   v-if="hunk.lines[0]?.type === 'header'"
                   class="flex text-[--text-secondary] transition-colors hover:bg-[--bg-tertiary]"
                 >
-                  <div class="flex-shrink-0 w-4" />
-                  <div class="flex-shrink-0 w-8 text-right pr-2 select-none text-[--text-secondary]/50">1</div>
-                  <span class="px-4 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[0].content }}</span>
+                  <div class="flex-shrink-0 w-3" />
+                  <div class="flex-shrink-0 w-8 text-right pr-2.5 select-none text-[--text-secondary]/50">1</div>
+                  <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[0].content }}</span>
                 </div>
                 <template v-for="(seg, bidx) in getHunkBodySegments(hunk)" :key="`${si}-${hi}-${bidx}-${seg.kind}`">
                   <div
@@ -728,12 +728,12 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                     <button
                       v-if="canStage && changeLineIdsInBlock(hunk, seg).size > 0"
                       type="button"
-                      class="diff-stage-float absolute right-2 top-1 z-30 flex items-center gap-0.5 px-2 py-0.5 rounded text-[10px] bg-green-700 text-white shadow-md opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity"
+                      class="diff-stage-float absolute right-2.5 top-2.5 z-40 flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-green-700 text-white shadow-md opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity cursor-pointer"
                       title="暂存本段连续 +/- 行"
                       @mousedown.stop
                       @click.stop="stageChangeBlock(si, hi, seg)"
                     >
-                      <FilePlus :size="11" />
+                      <FilePlus :size="12" />
                       暂存
                     </button>
                     <div
@@ -757,21 +757,21 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                         @mousedown="hunk.lines[li] && onGutterMouseDown($event, hunk.lines[li].id)"
                       >
                         <div
-                          class="flex-shrink-0 w-4 flex items-center justify-center text-[10px]"
+                          class="flex-shrink-0 w-3 flex items-center justify-center text-[10px]"
                           :class="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? 'text-green-400' : 'text-transparent'"
                         >{{ hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? '✓' : '○' }}</div>
-                        <div class="flex-shrink-0 w-8 text-right pr-2 text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-8 text-right pr-2.5 text-[--text-secondary]/50">{{ li + 1 }}</div>
                       </div>
                       <template v-else>
-                        <div class="flex-shrink-0 w-4" />
-                        <div class="flex-shrink-0 w-8 text-right pr-2 select-none text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-3" />
+                        <div class="flex-shrink-0 w-8 text-right pr-2.5 select-none text-[--text-secondary]/50">{{ li + 1 }}</div>
                       </template>
-                      <span class="px-4 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[li]?.content }}</span>
+                      <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[li]?.content }}</span>
                     </div>
                     <!-- 叠在行上方：不挡点击/划选；hover 整块时可见描边 + 淡绿罩 -->
                     <div
                       aria-hidden="true"
-                      class="pointer-events-none absolute inset-0 z-[5] rounded-sm border-2 border-transparent opacity-0 transition-[opacity,border-color,background-color] duration-150 group-hover/diffblk:border-green-500/70 group-hover/diffblk:bg-green-500/15 group-hover/diffblk:opacity-100"
+                      class="pointer-events-none absolute inset-0 z-[1] rounded-sm border-2 border-transparent opacity-0 transition-[opacity,border-color,background-color] duration-150 group-hover/diffblk:border-green-500/70 group-hover/diffblk:bg-green-500/15 group-hover/diffblk:opacity-100"
                     />
                   </div>
                   <template v-else>
@@ -796,16 +796,16 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                         @mousedown="hunk.lines[li] && onGutterMouseDown($event, hunk.lines[li].id)"
                       >
                         <div
-                          class="flex-shrink-0 w-4 flex items-center justify-center text-[10px]"
+                          class="flex-shrink-0 w-3 flex items-center justify-center text-[10px]"
                           :class="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? 'text-green-400' : 'text-transparent'"
                         >{{ hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? '✓' : '○' }}</div>
-                        <div class="flex-shrink-0 w-8 text-right pr-2 text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-8 text-right pr-2.5 text-[--text-secondary]/50">{{ li + 1 }}</div>
                       </div>
                       <template v-else>
-                        <div class="flex-shrink-0 w-4" />
-                        <div class="flex-shrink-0 w-8 text-right pr-2 select-none text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-3" />
+                        <div class="flex-shrink-0 w-8 text-right pr-2.5 select-none text-[--text-secondary]/50">{{ li + 1 }}</div>
                       </template>
-                      <span class="px-4 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[li]?.content }}</span>
+                      <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[li]?.content }}</span>
                     </div>
                   </template>
                 </template>

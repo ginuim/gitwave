@@ -510,14 +510,41 @@ fn commit_changes(state: State<'_, AppState>, message: String) -> Result<(), Str
     Ok(())
 }
 
+/// 是否在索引中（未跟踪文件 `git diff -- path` 恒为空，需走 `--no-index`）。
+fn is_tracked_in_index(repo: &str, rel: &str) -> Result<bool, String> {
+    let out = run_git(repo, &["ls-files", "--", rel])?;
+    Ok(!out.trim().is_empty())
+}
+
+#[cfg(unix)]
+const GIT_NULL_PATH: &str = "/dev/null";
+#[cfg(windows)]
+const GIT_NULL_PATH: &str = "NUL";
+
 #[tauri::command]
 fn get_file_diff(state: State<'_, AppState>, path: String, is_staged: bool) -> Result<String, String> {
     let repo = require_repo(&state)?;
     let p = normalize_path_for_git(&path);
+    ensure_safe_repo_relative_path(&p)?;
     let raw = if is_staged {
         run_git(&repo, &["diff", "--cached", "--", &p])?
     } else {
-        run_git(&repo, &["diff", "--", &p])?
+        let diff = run_git(&repo, &["diff", "--", &p])?;
+        if !diff.is_empty() {
+            diff
+        } else if !is_tracked_in_index(&repo, &p)? {
+            let worktree = Path::new(&repo).join(&p);
+            if worktree.is_file() {
+                run_git(
+                    &repo,
+                    &["diff", "--no-index", "--", GIT_NULL_PATH, &p],
+                )?
+            } else {
+                diff
+            }
+        } else {
+            diff
+        }
     };
     Ok(raw)
 }
