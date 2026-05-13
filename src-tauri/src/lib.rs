@@ -136,7 +136,7 @@ fn push_status_entries(
 ) {
     let status_label = format!("{index}{worktree}");
     let staged = index != ' ' && index != '?';
-    let unstaged = worktree != ' ' && worktree != '?';
+    let unstaged = worktree != ' ';
     if staged {
         out.push(FileStatus {
             path: path.clone(),
