@@ -70,6 +70,11 @@ function closeCtxMenu() {
   ctxMenu.value = null
 }
 
+function dirName(path: string): string {
+  const parts = path.replace(/\\/g, '/').split('/')
+  return parts[parts.length - 1] || path
+}
+
 // --- Create branch dialog ---
 const createBranchDialog = ref(false)
 const newBranchName = ref('')
@@ -248,7 +253,7 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         @click.stop="repoPath ? toggleDropdown() : selectOpenOther()"
       >
         <FolderOpen :size="16" class="flex-shrink-0" />
-        <span class="truncate flex-1 text-left">{{ repoPath ? repoPath.split('/').pop() || repoPath : '打开本地仓库' }}</span>
+        <span class="truncate flex-1 text-left">{{ repoPath ? dirName(repoPath) : '打开本地仓库' }}</span>
         <ChevronDownIcon v-if="repoPath" :size="14" class="flex-shrink-0" />
       </button>
 
@@ -265,7 +270,7 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
           @click.stop="selectPath(path)"
         >
           <FolderOpen :size="13" class="flex-shrink-0" />
-          <span class="truncate">{{ path.split('/').pop() }}</span>
+          <span class="truncate">{{ dirName(path) }}</span>
         </div>
 
         <div
