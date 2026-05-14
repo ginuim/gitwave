@@ -403,8 +403,48 @@ const pinnedLocalBranches = computed(() =>
 const regularLocalBranches = computed(() =>
   buildTree(props.branches.filter(b => !b.isRemote && !props.pinnedBranches.includes(b.name)))
 )
+function buildRemoteTree(branches: BranchInfo[]): TreeNode[] {
+  // Only group by remote name (first /), keep the full branch path as one label
+  const remotes: Record<string, BranchInfo[]> = {}
+  for (const b of branches) {
+    const slashIdx = b.name.indexOf('/')
+    const remote = slashIdx > 0 ? b.name.slice(0, slashIdx) : b.name
+    if (!remotes[remote]) remotes[remote] = []
+    remotes[remote].push(b)
+  }
+  const result: TreeNode[] = []
+  const remoteNames = Object.keys(remotes).sort()
+  for (const r of remoteNames) {
+    const groupKey = r + '/'
+    const children = remotes[r]
+    result.push({
+      label: r,
+      depth: 0,
+      isLeaf: false,
+      isCurrent: false,
+      isRemote: false,
+      isHead: false,
+      key: groupKey,
+    })
+    if (expandedGroups.value.has(groupKey)) {
+      for (const b of children) {
+        const displayName = b.name.slice(r.length + 1) // strip "origin/"
+        result.push({
+          label: displayName,
+          depth: 1,
+          isLeaf: true,
+          isCurrent: b.isCurrent,
+          isRemote: b.isRemote,
+          isHead: b.isHead,
+          key: groupKey + displayName,
+        })
+      }
+    }
+  }
+  return result
+}
 const remoteBranches = computed(() =>
-  buildTree(props.branches.filter(b => b.isRemote))
+  buildRemoteTree(props.branches.filter(b => b.isRemote))
 )
 const pinnedSet = computed(() => new Set(props.pinnedBranches))
 </script>
@@ -767,8 +807,8 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
                 />
               </button>
 
-              <Globe v-if="node.isLeaf" :size="13" class="flex-shrink-0" />
-
+              <!-- Spacer replaces removed Globe to keep indentation -->
+              <div v-if="node.isLeaf" class="w-[13px] flex-shrink-0" />
               <span class="truncate">{{ node.label }}</span>
               <span
                 v-if="node.isHead"
