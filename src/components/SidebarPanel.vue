@@ -47,9 +47,59 @@ const emit = defineEmits<{
 
 // --- Dropdown ---
 const dropdownOpen = ref(false)
+const repoFilter = ref('')
+
+const PINNED_REPOS_KEY = 'gitwave-pinned-repos'
+function loadPinnedRepos(): string[] {
+  try {
+    const raw = localStorage.getItem(PINNED_REPOS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+const pinnedRepos = ref<string[]>(loadPinnedRepos())
+
+function savePinnedRepos() {
+  localStorage.setItem(PINNED_REPOS_KEY, JSON.stringify(pinnedRepos.value))
+}
+
+const sortedRepos = computed(() => {
+  const pinned = pinnedRepos.value
+  const all = props.recentRepos || []
+  const pinnedSet = new Set(pinned)
+  const pinnedList = all.filter(p => pinnedSet.has(p))
+  const unpinnedList = all.filter(p => !pinnedSet.has(p))
+  return { pinned: pinnedList, unpinned: unpinnedList }
+})
+
+const filteredPinned = computed(() => {
+  const f = repoFilter.value.toLowerCase()
+  if (!f) return sortedRepos.value.pinned
+  return sortedRepos.value.pinned.filter(p => dirName(p).toLowerCase().includes(f) || p.toLowerCase().includes(f))
+})
+
+const filteredUnpinned = computed(() => {
+  const f = repoFilter.value.toLowerCase()
+  if (!f) return sortedRepos.value.unpinned
+  return sortedRepos.value.unpinned.filter(p => dirName(p).toLowerCase().includes(f) || p.toLowerCase().includes(f))
+})
+
+function isPinnedRepo(path: string): boolean {
+  return pinnedRepos.value.includes(path)
+}
+
+function togglePinRepo(path: string) {
+  const idx = pinnedRepos.value.indexOf(path)
+  if (idx >= 0) {
+    pinnedRepos.value.splice(idx, 1)
+  } else {
+    pinnedRepos.value.push(path)
+  }
+  savePinnedRepos()
+}
 
 function toggleDropdown() {
   dropdownOpen.value = !dropdownOpen.value
+  if (dropdownOpen.value) repoFilter.value = ''
 }
 
 function selectPath(path: string) {
@@ -374,30 +424,94 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
       <!-- Dropdown menu -->
       <div
         v-if="dropdownOpen"
-        class="absolute left-2.5 right-2.5 top-full mt-1 bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-md z-50 max-h-52 overflow-y-auto text-xs"
+        class="absolute left-2.5 right-2.5 top-full -mt-[22px] bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-md z-50 flex flex-col text-xs max-h-72"
       >
-        <div
-          v-for="path in recentRepos"
-          :key="path"
-          class="flex items-center gap-2 px-2.5 py-2.5 cursor-pointer hover:bg-[--accent] hover:text-white transition-colors truncate"
-          :class="path === repoPath ? 'text-[--accent] font-medium' : 'text-[--text-primary]'"
-          @click.stop="selectPath(path)"
-        >
-          <FolderOpen :size="13" class="flex-shrink-0" />
-          <span class="truncate">{{ dirName(path) }}</span>
+        <!-- Search filter -->
+        <div class="px-2.5 pt-2 pb-1.5">
+          <input
+            v-model="repoFilter"
+            placeholder="过滤项目..."
+            class="w-full px-2 py-1.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors placeholder-[--text-secondary]"
+            @click.stop
+          />
         </div>
 
-        <div
-          v-if="recentRepos.length > 0"
-          class="h-px bg-[--border-color] mx-2.5"
-        />
+        <!-- Scrollable repo list -->
+        <div class="flex-1 overflow-y-auto min-h-0">
+          <!-- Pinned repos -->
+          <div v-if="filteredPinned.length > 0">
+            <div class="px-2.5 py-1 text-[10px] text-[--text-secondary]">已固定</div>
+            <div
+              v-for="path in filteredPinned"
+              :key="'p-'+path"
+              class="flex items-center gap-1.5 px-2.5 py-2 cursor-pointer hover:bg-[--accent] hover:text-white transition-colors group"
+              :class="path === repoPath ? 'text-[--accent] font-medium' : 'text-[--text-primary]'"
+              @click.stop="selectPath(path)"
+            >
+              <FolderOpen :size="13" class="flex-shrink-0" />
+              <div class="flex-1 min-w-0">
+                <div class="truncate leading-tight">{{ dirName(path) }}</div>
+                <div class="text-[10px] truncate opacity-50 leading-tight">{{ path }}</div>
+              </div>
+              <button
+                class="flex-shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity text-current cursor-pointer"
+                @click.stop="togglePinRepo(path)"
+                title="取消固定"
+              >
+                <PinOff :size="12" />
+              </button>
+            </div>
+          </div>
 
-        <div
-          class="flex items-center gap-2 px-2.5 py-2.5 cursor-pointer text-[--text-secondary] hover:bg-[--accent] hover:text-white transition-colors"
-          @click.stop="selectOpenOther"
-        >
-          <FolderOpen :size="13" class="flex-shrink-0" />
-          <span>打开其他仓库...</span>
+          <!-- Divider -->
+          <div
+            v-if="filteredPinned.length > 0 && filteredUnpinned.length > 0"
+            class="h-px bg-[--border-color] mx-2.5 my-1"
+          />
+
+          <!-- Unpinned repos -->
+          <div v-if="filteredUnpinned.length > 0">
+            <div v-if="!repoFilter && filteredPinned.length > 0" class="px-2.5 py-1 text-[10px] text-[--text-secondary]">其他</div>
+            <div
+              v-for="path in filteredUnpinned"
+              :key="path"
+              class="flex items-center gap-1.5 px-2.5 py-2 cursor-pointer hover:bg-[--accent] hover:text-white transition-colors group"
+              :class="path === repoPath ? 'text-[--accent] font-medium' : 'text-[--text-primary]'"
+              @click.stop="selectPath(path)"
+            >
+              <FolderOpen :size="13" class="flex-shrink-0" />
+              <div class="flex-1 min-w-0">
+                <div class="truncate leading-tight">{{ dirName(path) }}</div>
+                <div class="text-[10px] truncate opacity-50 leading-tight">{{ path }}</div>
+              </div>
+              <button
+                class="flex-shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity text-current cursor-pointer"
+                @click.stop="togglePinRepo(path)"
+                :title="isPinnedRepo(path) ? '取消固定' : '固定到顶部'"
+              >
+                <Pin :size="12" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Empty filter result -->
+          <div
+            v-if="filteredPinned.length === 0 && filteredUnpinned.length === 0"
+            class="px-2.5 py-4 text-xs text-[--text-secondary] text-center"
+          >
+            无匹配项目
+          </div>
+        </div>
+
+        <!-- Bottom: open other repo -->
+        <div class="border-t border-[--border-color] flex-shrink-0">
+          <div
+            class="flex items-center gap-2 px-2.5 py-2.5 cursor-pointer text-[--text-secondary] hover:bg-[--accent] hover:text-white transition-colors"
+            @click.stop="selectOpenOther"
+          >
+            <FolderOpen :size="13" class="flex-shrink-0" />
+            <span>打开其他仓库...</span>
+          </div>
         </div>
       </div>
 

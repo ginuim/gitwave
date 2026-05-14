@@ -70,7 +70,7 @@ watch(() => props.settingsRevision, () => {
 
 // Reload when repo path becomes available (e.g. after app init)
 watch(() => props.repoPath, (path) => {
-  if (path && !aiLoading.value && aiError.value) {
+  if (path && aiSettings.value === null) {
     loadAiData()
   }
 })
