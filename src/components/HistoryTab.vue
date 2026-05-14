@@ -25,10 +25,11 @@ const emit = defineEmits<{
       </span>
       <div class="flex items-center gap-2">
         <button
-          class="px-2 py-1 rounded-[var(--radius)] text-xs transition-colors cursor-pointer leading-tight"
+          class="px-2 py-1 rounded-[var(--radius)] text-xs transition-colors cursor-pointer leading-tight max-w-[180px] truncate"
           :class="filter === 'current'
             ? 'bg-[--accent] text-white font-medium'
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
+          :title="currentBranch || '当前'"
           @click="emit('updateFilter', 'current')"
         >{{ currentBranch || '当前' }}</button>
         <button

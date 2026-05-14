@@ -7,6 +7,7 @@ import SidebarPanel from './components/SidebarPanel.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import DiffPanel from './components/DiffPanel.vue'
 import HistoryTab from './components/HistoryTab.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import type { FileStatus, CommitLog, BranchInfo, AheadBehind } from './types'
 
 // State
@@ -32,6 +33,8 @@ const branchesLoading = ref(false)
 const recentRepos = ref<string[]>([])
 const pinnedBranches = ref<string[]>([])
 const stashEntries = ref<any[]>([])
+const settingsOpen = ref(false)
+
 const historyFilter = ref<'current' | 'all'>('current')
 const currentBranch = computed(() => branches.value.find(b => b.isCurrent)?.name ?? '')
 
@@ -543,6 +546,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @fetch="gitFetch"
         @push="gitPush"
         @pull="gitPull"
+        @settings-open="settingsOpen = true"
       />
     </Pane>
 
@@ -603,4 +607,10 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         {{ toast.message }}
       </div>
     </Transition>
+
+    <!-- Settings Dialog -->
+    <SettingsDialog
+      :show="settingsOpen"
+      @close="settingsOpen = false"
+    />
 </template>

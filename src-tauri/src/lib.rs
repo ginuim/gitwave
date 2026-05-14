@@ -845,6 +845,238 @@ fn stash_drop(state: State<'_, AppState>, index: usize) -> Result<String, String
     run_git(&repo, &["stash", "drop", &format!("stash@{{{index}}}")])
 }
 
+// === Settings ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConfig {
+    pub user_name: String,
+    pub user_email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfig {
+    pub id: String,
+    pub provider_id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralSettings {
+    pub user_name: String,
+    pub user_email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSettings {
+    pub commit_prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub general: GeneralSettings,
+    pub providers: Vec<ProviderConfig>,
+    pub models: Vec<ModelConfig>,
+    pub prompts: PromptSettings,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            general: GeneralSettings {
+                user_name: String::new(),
+                user_email: String::new(),
+            },
+            providers: vec![
+                ProviderConfig {
+                    id: "openai-default".to_string(),
+                    name: "OpenAI".to_string(),
+                    provider_type: "openai".to_string(),
+                    base_url: "https://api.openai.com/v1".to_string(),
+                    api_key: String::new(),
+                    is_default: true,
+                },
+                ProviderConfig {
+                    id: "anthropic-default".to_string(),
+                    name: "Anthropic".to_string(),
+                    provider_type: "anthropic".to_string(),
+                    base_url: "https://api.anthropic.com".to_string(),
+                    api_key: String::new(),
+                    is_default: false,
+                },
+            ],
+            models: vec![
+                ModelConfig {
+                    id: "model-openai-1".to_string(),
+                    provider_id: "openai-default".to_string(),
+                    name: "gpt-4o".to_string(),
+                    is_default: true,
+                },
+                ModelConfig {
+                    id: "model-anthropic-1".to_string(),
+                    provider_id: "anthropic-default".to_string(),
+                    name: "claude-sonnet-4-20250514".to_string(),
+                    is_default: false,
+                },
+            ],
+            prompts: PromptSettings {
+                commit_prompt: r#"## Format Template
+你生成的 Commit Message 必须严格遵循以下结构：
+<type>(<scope>): <subject>
+
+<BLANK LINE>
+
+<body>
+
+<BLANK LINE>
+
+<footer>
+
+- `<type>`: 提交的类型（必填）
+- `<scope>`: 影响的范围（可选）
+- `<subject>`: 简短的修改描述（必填）
+- `<body>`: 详细的修改背景和逻辑（可选）
+- `<footer>`: 关联的 Issue 或破坏性变更提示（可选）
+
+## Allowed Types (类型定义)
+你只能从以下类型中选择最符合的一个填入 `<type>`：
+- `feat`: 新增功能 (Feature)
+- `fix`: 修复 Bug (Bugfix)
+- `docs`: 仅修改文档 (Documentation)
+- `style`: 代码格式调整（不影响代码运行，如空格、缩进、分号等）
+- `refactor`: 代码重构（既不是新增功能，也不是修复 Bug 的代码更改）
+- `perf`: 性能优化 (Performance)
+- `test`: 新增或修改测试用例
+- `build`: 影响构建系统或外部依赖的更改（如 npm, webpack, maven 等）
+- `ci`: 更改 CI 配置或脚本（如 GitHub Actions, Travis 等）
+- `chore`: 杂项（如日常事务、构建过程或辅助工具的变动，不修改 src 或 test 文件）
+- `revert`: 回滚之前的提交
+
+## Rules & Constraints (严格遵守的规则)
+1. **语言设定**: Commit Message 默认使用 [英文] 编写（除非用户明确要求使用中文）。
+2. **Subject 规则**:
+   - 长度不得超过 50 个字符。
+   - 使用祈使句（如 "add", "fix", "change"，不要使用 "added", "fixes"）。
+   - 首字母小写。
+   - 结尾不要加句号（`.`）。
+3. **Scope 规则**: 提取修改最集中的模块名，如 `auth`, `db`, `ui`。如果是全局修改或难以归类，请省略 `(scope)`。
+4. **Body 规则**:
+   - 如果修改较复杂，必须提供 Body。
+   - 重点解释 **"为什么做这个修改 (Why)"** 以及 **"主要逻辑是什么 (How)"**，而不是简单重复代码变动 (What)。
+   - 每行不超过 72 个字符，方便终端阅读。
+5. **破坏性变更**: 如果包含破坏性变更（Breaking Changes），必须在 Footer 区域以 `BREAKING CHANGE:` 开头并详细说明。
+6. **Commit Message 语言**: 必须使用英文编写 Commit Message。
+7. **提交范围**: 只应该提交已经git add 的代码
+
+## Workflow (你的思考过程)
+在生成结果前，请按照以下步骤在后台静默思考：
+1. 分析 Diff/描述：这段代码实际改变了什么？
+2. 判定类型：这是新功能、修复，还是重构？（选择最核心的 Type）
+3. 提取范围：主要影响了哪个特定模块？（可选）
+4. 撰写摘要：用最精炼的动宾短语描述变动。
+5. 补充细节：如果是复杂变动，提炼出 1-3 点修改原因放入 Body。
+
+## Examples (参考示例)
+✅ 好的示例 1（简单的新功能）:
+feat(auth): add JWT token validation for API routes
+
+✅ 好的示例 2（包含 Body 和 Footer 的 Bug 修复）:
+fix(cart): resolve incorrect total price calculation
+
+The discount multiplier was being applied before tax, causing a 2% discrepancy in the final cart total. Moved the discount logic to execute after tax calculation.
+
+Closes #123
+
+✅ 好的示例 3（破坏性变更）:
+refactor(api): rename user endpoint and update payload structure
+
+BREAKING CHANGE: The endpoint `/api/v1/user` has been renamed to `/api/v1/users`. The `id` field in the payload is now required.
+
+❌ 坏的示例（绝对不要这样做）:
+- `fixed bug` (缺少 type，没有说明修复了什么)
+- `feat: added new login page.` (使用了过去式 added，结尾有句号)
+- `update config` (缺少具体的 type，不够清晰)
+
+## 示例
+```bash
+./git-commit.sh "fix: 修复登录 bug"
+./git-commit.sh "feat: 新增用户管理功能"
+./git-commit.sh "docs: 更新文档"
+```"#.to_string(),
+            },
+        }
+    }
+}
+
+fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    fs::create_dir_all(&data_dir).map_err(|e| format!("failed to create app data dir: {e}"))?;
+    Ok(data_dir.join("settings.json"))
+}
+
+#[tauri::command]
+fn get_git_config(state: State<'_, AppState>) -> Result<GitConfig, String> {
+    let repo = require_repo(&state)?;
+    let name = run_git(&repo, &["config", "user.name"]).unwrap_or_default();
+    let email = run_git(&repo, &["config", "user.email"]).unwrap_or_default();
+    Ok(GitConfig {
+        user_name: name.trim().to_string(),
+        user_email: email.trim().to_string(),
+    })
+}
+
+#[tauri::command]
+fn set_git_config(state: State<'_, AppState>, user_name: String, user_email: String) -> Result<(), String> {
+    let repo = require_repo(&state)?;
+    if !user_name.is_empty() {
+        run_git(&repo, &["config", "user.name", &user_name])?;
+    }
+    if !user_email.is_empty() {
+        run_git(&repo, &["config", "user.email", &user_email])?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn load_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
+    let path = settings_path(&app)?;
+    if !path.exists() {
+        return Ok(AppSettings::default());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read settings: {e}"))?;
+    serde_json::from_str(&content).map_err(|e| format!("failed to parse settings: {e}"))
+}
+
+#[tauri::command]
+fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
+    let path = settings_path(&app)?;
+    let content = serde_json::to_string_pretty(&settings)
+        .map_err(|e| format!("failed to serialize settings: {e}"))?;
+    fs::write(&path, &content).map_err(|e| format!("failed to write settings: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -887,6 +1119,10 @@ pub fn run() {
             stash_apply,
             stash_drop,
             stash_file,
+            get_git_config,
+            set_git_config,
+            load_settings,
+            save_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

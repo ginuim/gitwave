@@ -4,7 +4,7 @@ import {
   FolderOpen, GitBranch, Globe, Pin, PinOff,
   List, History, Loader2, ChevronRight, ChevronDown, Plus, Tag,
   ChevronDown as ChevronDownIcon,
-  RefreshCw, ArrowDownToLine, ArrowUpToLine, Archive,
+  RefreshCw, ArrowDownToLine, ArrowUpToLine, Archive, Settings,
 } from 'lucide-vue-next'
 import type { BranchInfo, AheadBehind } from '../types'
 
@@ -42,6 +42,7 @@ const emit = defineEmits<{
   fetch: []
   push: []
   pull: []
+  settingsOpen: []
 }>()
 
 // --- Dropdown ---
@@ -529,6 +530,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
           :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
           @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', node.label)"
+          @click="!node.isLeaf && toggleGroup(node.key)"
           @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, node.label, node.isCurrent)"
         >
           <button
@@ -577,6 +579,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
           :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
           @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', node.label)"
+          @click="!node.isLeaf && toggleGroup(node.key)"
           @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, node.label, node.isCurrent)"
         >
           <button
@@ -627,7 +630,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
             ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
           :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
-          @click="node.isLeaf && emit('checkoutRemote', node.key)"
+          @click="node.isLeaf ? emit('checkoutRemote', node.key) : toggleGroup(node.key)"
         >
           <button
             v-if="!node.isLeaf"
@@ -659,6 +662,17 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
       <div v-else class="text-xs text-[--text-secondary] pl-2 py-1">
         尚未打开仓库
       </div>
+    </div>
+
+    <!-- Settings footer -->
+    <div class="border-t border-[--border-color] px-2.5 py-1.5">
+      <button
+        class="flex items-center gap-2 w-full px-2 py-1.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
+        @click="emit('settingsOpen')"
+      >
+        <Settings :size="14" />
+        <span>设置</span>
+      </button>
     </div>
 
     <!-- Context menu -->
