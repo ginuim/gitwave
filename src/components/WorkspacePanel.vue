@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, RefreshCw } from 'lucide-vue-next'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, RefreshCw, Check } from 'lucide-vue-next'
 import type { FileStatus, AppSettings, ProviderConfig, ModelConfig } from '../types'
 
 const props = defineProps<{
@@ -26,6 +26,24 @@ const emit = defineEmits<{
 
 // === Manual commit state ===
 const commitMessage = ref('')
+const commitSuccess = ref(false)
+let commitSuccessTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(() => props.commitLoading, (loading) => {
+  if (loading && commitSuccess.value) {
+    commitSuccess.value = false
+    if (commitSuccessTimer) { clearTimeout(commitSuccessTimer); commitSuccessTimer = null }
+    return
+  }
+  if (!loading && commitMessage.value === '' && !commitSuccess.value && !generating.value) {
+    // commit just finished — show success briefly
+    commitSuccess.value = true
+    if (commitSuccessTimer) clearTimeout(commitSuccessTimer)
+    commitSuccessTimer = setTimeout(() => {
+      commitSuccess.value = false
+    }, 2000)
+  }
+})
 
 function handleCommit() {
   if (!commitMessage.value.trim()) return
@@ -544,8 +562,10 @@ async function showInFolder(relPath: string, e: Event) {
           :disabled="!commitMessage.trim() || commitLoading || generating"
           @click="handleCommit"
         >
-          <GitCommitVertical :size="12" />
-          <span>{{ commitLoading ? '提交中...' : 'Commit' }}</span>
+          <Check v-if="commitSuccess && !commitLoading" :size="12" />
+          <Loader2 v-else-if="commitLoading" :size="12" class="animate-spin" />
+          <GitCommitVertical v-else :size="12" />
+          <span>{{ commitLoading ? '提交中...' : commitSuccess ? '已提交' : 'Commit' }}</span>
         </button>
       </div>
     </div>
