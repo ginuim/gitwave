@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { fetch } from '@tauri-apps/plugin-http'
 import { Sparkles, GitCommitVertical, Loader2, RefreshCw, AlertCircle } from 'lucide-vue-next'
 import type { AppSettings, ProviderConfig, ModelConfig } from '../types'
 
@@ -162,7 +163,6 @@ Return ONLY the commit message, nothing else.`
 
 async function callOpenAI(provider: ProviderConfig, model: string, prompt: string): Promise<string> {
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
-  // For OpenAI-compatible: handle base URL patterns
   const url = baseUrl.includes('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`
 
   const resp = await fetch(url, {
@@ -174,20 +174,32 @@ async function callOpenAI(provider: ProviderConfig, model: string, prompt: strin
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1024,
+      max_tokens: 2048,
       temperature: 0.3,
     }),
   })
 
+  const rawText = await resp.text()
+
   if (!resp.ok) {
-    const text = await resp.text()
-    throw new Error(`OpenAI API error (${resp.status}): ${text}`)
+    throw new Error(`OpenAI API error (${resp.status}): ${rawText}`)
   }
 
-  const data = await resp.json()
+  let data: any
+  try {
+    data = JSON.parse(rawText)
+  } catch {
+    throw new Error(`OpenAI returned non-JSON response: ${rawText.slice(0, 500)}`)
+  }
+
   const content = data?.choices?.[0]?.message?.content
-  if (!content) throw new Error('OpenAI returned empty response')
-  return content
+  if (content) return content
+
+  // Some OpenAI-compatible might return differently
+  if (data?.response) return data.response
+  if (data?.text) return data.text
+
+  throw new Error(`OpenAI returned unexpected format: ${JSON.stringify(data).slice(0, 500)}`)
 }
 
 async function callAnthropic(provider: ProviderConfig, model: string, prompt: string): Promise<string> {
@@ -203,20 +215,44 @@ async function callAnthropic(provider: ProviderConfig, model: string, prompt: st
     },
     body: JSON.stringify({
       model,
-      max_tokens: 1024,
+      max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
 
+  // Read raw text first for debugging
+  const rawText = await resp.text()
+
   if (!resp.ok) {
-    const text = await resp.text()
-    throw new Error(`Anthropic API error (${resp.status}): ${text}`)
+    throw new Error(`Anthropic API error (${resp.status}): ${rawText}`)
   }
 
-  const data = await resp.json()
-  const content = data?.content?.[0]?.text
-  if (!content) throw new Error('Anthropic returned empty response')
-  return content
+  let data: any
+  try {
+    data = JSON.parse(rawText)
+  } catch {
+    throw new Error(`Anthropic returned non-JSON response: ${rawText.slice(0, 500)}`)
+  }
+
+  // Standard Anthropic format: content[] may contain multiple blocks (text, thinking, tool_use...)
+  if (Array.isArray(data?.content)) {
+    for (const block of data.content) {
+      if (block?.type === 'text' && block?.text) return block.text
+    }
+  }
+
+  // Some API returns content as a plain string
+  if (data?.content && typeof data.content === 'string') return data.content
+
+  // Some return in choices format like OpenAI
+  const openaiContent = data?.choices?.[0]?.message?.content
+  if (openaiContent) return openaiContent
+
+  // Fallback: try to find any text field
+  const anyText = data?.completion || data?.text || data?.response
+  if (anyText) return anyText
+
+  throw new Error(`Anthropic returned unexpected format: ${JSON.stringify(data).slice(0, 500)}`)
 }
 
 // --- Actions ---

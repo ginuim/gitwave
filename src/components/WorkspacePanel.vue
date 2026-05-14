@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles } from 'lucide-vue-next'
-import type { FileStatus } from '../types'
-import AiCommitPanel from './AiCommitPanel.vue'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, RefreshCw } from 'lucide-vue-next'
+import type { FileStatus, AppSettings, ProviderConfig, ModelConfig } from '../types'
 
 const props = defineProps<{
   statuses: FileStatus[]
@@ -23,22 +24,8 @@ const emit = defineEmits<{
   revealError: [message: string]
 }>()
 
-// Commit tab state (persisted in localStorage)
-const COMMIT_TAB_KEY = 'gitwave-commit-tab'
+// === Manual commit state ===
 const commitMessage = ref('')
-const commitTab = ref<string>('manual')
-
-onMounted(() => {
-  const saved = localStorage.getItem(COMMIT_TAB_KEY)
-  if (saved === 'manual' || saved === 'ai') {
-    commitTab.value = saved
-  }
-})
-
-function switchTab(tab: 'manual' | 'ai') {
-  commitTab.value = tab
-  localStorage.setItem(COMMIT_TAB_KEY, tab)
-}
 
 function handleCommit() {
   if (!commitMessage.value.trim()) return
@@ -46,19 +33,192 @@ function handleCommit() {
   commitMessage.value = ''
 }
 
-function handleAiCommit(msg: string) {
-  emit('commit', msg)
+// === AI commit state ===
+const aiSettings = ref<AppSettings | null>(null)
+const stagedDiff = ref<string>('')
+const generating = ref(false)
+const aiLoading = ref(true)
+const aiError = ref<string | null>(null)
+const selectedModelId = ref<string>('')
+
+const allModels = computed<(ModelConfig & { provider: ProviderConfig })[]>(() => {
+  if (!aiSettings.value) return []
+  const result: (ModelConfig & { provider: ProviderConfig })[] = []
+  for (const prov of aiSettings.value.providers) {
+    for (const model of aiSettings.value.models.filter(m => m.providerId === prov.id)) {
+      result.push({ ...model, provider: prov })
+    }
+  }
+  return result
+})
+
+const selectedModel = computed(() => allModels.value.find(m => m.id === selectedModelId.value) || null)
+
+const defaultModel = computed(() => allModels.value.find(m => m.isDefault) || allModels.value[0] || null)
+
+const hasStagedFiles = computed(() => props.statuses.some(f => f.isStaged))
+
+const commitPrompt = computed(() => aiSettings.value?.prompts?.commitPrompt || '')
+
+onMounted(async () => {
+  await loadAiData()
+})
+
+watch(() => props.settingsRevision, () => {
+  if (!generating.value) reloadAiSettings()
+})
+
+async function reloadAiSettings() {
+  try {
+    const s = await invoke<AppSettings>('load_settings')
+    aiSettings.value = s
+    if (selectedModelId.value && !allModels.value.find(m => m.id === selectedModelId.value)) {
+      const d = defaultModel.value
+      if (d) selectedModelId.value = d.id
+    } else if (allModels.value.length > 0 && !selectedModelId.value) {
+      const d = defaultModel.value
+      if (d) selectedModelId.value = d.id
+    }
+  } catch (_) { /* silent */ }
 }
 
+async function loadAiData() {
+  aiLoading.value = true
+  aiError.value = null
+  try {
+    const [s, diff] = await Promise.all([
+      invoke<AppSettings>('load_settings'),
+      invoke<string>('get_staged_diff'),
+    ])
+    aiSettings.value = s
+    stagedDiff.value = diff
+    if (!selectedModelId.value || !allModels.value.find(m => m.id === selectedModelId.value)) {
+      const d = defaultModel.value
+      if (d) selectedModelId.value = d.id
+      else if (allModels.value.length > 0) selectedModelId.value = allModels.value[0].id
+    }
+  } catch (e: any) {
+    aiError.value = String(e)
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+async function generateCommitMessage() {
+  if (!selectedModel.value || generating.value) return
+  generating.value = true
+  aiError.value = null
+
+  try {
+    const model = selectedModel.value
+    // Re-fetch staged diff to ensure it's up-to-date
+    const diff = await invoke<string>('get_staged_diff')
+    stagedDiff.value = diff
+    const prompt = buildPrompt(diff)
+
+    let result: string
+    if (model.provider.type === 'openai') {
+      result = await callOpenAI(model.provider, model.name, prompt)
+    } else {
+      result = await callAnthropic(model.provider, model.name, prompt)
+    }
+
+    commitMessage.value = result.trim()
+  } catch (e: any) {
+    aiError.value = String(e)
+  } finally {
+    generating.value = false
+  }
+}
+
+function buildPrompt(diff: string): string {
+  const prompt = commitPrompt.value || ''
+  return `You are a git commit message generator.
+
+${prompt ? `## Commit Convention\n${prompt}\n\n` : ''}## Staged Changes (diff)
+\`\`\`diff
+${diff}
+\`\`\`
+
+Please generate a commit message for the above staged changes following the conventions described above.
+Return ONLY the commit message, nothing else.`
+}
+
+async function callOpenAI(provider: ProviderConfig, model: string, prompt: string): Promise<string> {
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '')
+  const url = baseUrl.includes('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${provider.apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 2048,
+      temperature: 0.3,
+    }),
+  })
+
+  const rawText = await resp.text()
+  if (!resp.ok) throw new Error(`OpenAI API error (${resp.status}): ${rawText}`)
+
+  let data: any
+  try { data = JSON.parse(rawText) } catch { throw new Error(`OpenAI returned non-JSON: ${rawText.slice(0, 500)}`) }
+
+  const content = data?.choices?.[0]?.message?.content
+  if (content) return content
+  if (data?.response) return data.response
+  if (data?.text) return data.text
+  throw new Error(`OpenAI returned unexpected format: ${JSON.stringify(data).slice(0, 500)}`)
+}
+
+async function callAnthropic(provider: ProviderConfig, model: string, prompt: string): Promise<string> {
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '')
+  const url = baseUrl.includes('/v1/messages') ? baseUrl : `${baseUrl}/v1/messages`
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': provider.apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2048,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+
+  const rawText = await resp.text()
+  if (!resp.ok) throw new Error(`Anthropic API error (${resp.status}): ${rawText}`)
+
+  let data: any
+  try { data = JSON.parse(rawText) } catch { throw new Error(`Anthropic returned non-JSON: ${rawText.slice(0, 500)}`) }
+
+  if (Array.isArray(data?.content)) {
+    for (const block of data.content) {
+      if (block?.type === 'text' && block?.text) return block.text
+    }
+  }
+  if (data?.content && typeof data.content === 'string') return data.content
+  const openaiContent = data?.choices?.[0]?.message?.content
+  if (openaiContent) return openaiContent
+  const anyText = data?.completion || data?.text || data?.response
+  if (anyText) return anyText
+  throw new Error(`Anthropic returned unexpected format: ${JSON.stringify(data).slice(0, 500)}`)
+}
+
+// === File list helpers ===
 const unstagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => !f.isStaged)
 const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStaged)
 
 async function showInFolder(relPath: string, e: Event) {
   e.stopPropagation()
-  if (!props.repoPath) {
-    emit('revealError', '未打开仓库')
-    return
-  }
+  if (!props.repoPath) { emit('revealError', '未打开仓库'); return }
   try {
     const abs = await join(props.repoPath, relPath)
     await revealItemInDir(abs)
@@ -171,58 +331,81 @@ async function showInFolder(relPath: string, e: Event) {
       </div>
     </div>
 
-    <!-- Commit Form (tabs: manual / AI) -->
-    <div class="border-t border-[--border-color] bg-[--bg-secondary] flex-shrink-0 flex flex-col min-h-0">
-      <!-- Tab switcher -->
-      <div class="flex border-b border-[--border-color]">
-        <button
-          class="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs transition-colors cursor-pointer"
-          :class="commitTab === 'manual'
-            ? 'text-[--accent] border-b-2 border-[--accent] bg-[--bg-tertiary]'
-            : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
-          @click="switchTab('manual')"
-        >
-          <GitCommitVertical :size="12" />
-          <span>手动提交</span>
-        </button>
-        <button
-          class="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs transition-colors cursor-pointer"
-          :class="commitTab === 'ai'
-            ? 'text-[--accent] border-b-2 border-[--accent] bg-[--bg-tertiary]'
-            : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
-          @click="switchTab('ai')"
-        >
-          <Sparkles :size="12" />
-          <span>AI 提交</span>
-        </button>
-      </div>
+    <!-- Unified Commit Area -->
+    <div class="border-t border-[--border-color] bg-[--bg-secondary] flex-shrink-0">
+      <!-- AI section: only when models are configured -->
+      <template v-if="!aiLoading && allModels.length > 0">
+        <!-- Model selector + Generate button -->
+        <div class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary]">
+          <Sparkles :size="14" class="text-[--accent] flex-shrink-0" />
+          <div class="flex-1 flex items-stretch gap-1.5">
+            <!-- Single model: show as label; multiple: show as dropdown -->
+            <select
+              v-if="allModels.length > 1"
+              v-model="selectedModelId"
+              class="flex-1 min-w-0 px-2.5 py-1.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors cursor-pointer"
+              :disabled="generating"
+            >
+              <option value="" disabled>选择模型</option>
+              <option
+                v-for="m in allModels"
+                :key="m.id"
+                :value="m.id"
+              >
+                {{ m.name }} ({{ m.provider.name }} / {{ m.provider.type === 'openai' ? 'OpenAI' : 'Anthropic' }})
+              </option>
+            </select>
+            <div
+              v-else
+              class="flex-1 flex items-center px-2.5 py-1.5 text-xs text-[--text-primary] font-mono-ui truncate"
+            >
+              {{ allModels[0].name }} ({{ allModels[0].provider.name }})
+            </div>
+            <button
+              class="flex items-center gap-1 px-3 py-1.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
+              :disabled="generating || aiLoading || !hasStagedFiles"
+              @click="generateCommitMessage"
+            >
+              <Sparkles :size="12" />
+              <span>{{ generating ? '生成中...' : '生成提交信息' }}</span>
+            </button>
+          </div>
+        </div>
 
-      <!-- Manual commit -->
-      <div v-if="commitTab === 'manual'" class="p-2.5">
+        <!-- Hint: no staged files -->
+        <div
+          v-if="!hasStagedFiles"
+          class="px-2.5 py-1 text-[10px] text-[--text-secondary] bg-[--bg-tertiary] border-b border-[--border-color]"
+        >
+          请先在文件列表中暂存文件后再使用 AI 生成提交信息
+        </div>
+      </template>
+
+      <!-- Commit message input + button -->
+      <div class="p-2.5">
+        <div v-if="aiError" class="mb-2 flex items-start gap-1.5 p-2 rounded-[var(--radius)] bg-red-900/30 border border-red-800">
+          <AlertCircle :size="13" class="text-red-400 flex-shrink-0 mt-0.5" />
+          <span class="text-[11px] text-red-300 break-words flex-1">{{ aiError }}</span>
+          <button class="flex-shrink-0 p-0.5 rounded text-red-400 hover:text-red-200 transition-colors cursor-pointer" @click="aiError = null">
+            <span class="text-[11px]">✕</span>
+          </button>
+        </div>
         <textarea
           v-model="commitMessage"
           class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-tertiary] border border-[--border-color] text-xs text-[--text-primary] placeholder-[--text-secondary] resize-none outline-none focus:border-[--accent] transition-colors font-mono-ui leading-relaxed"
-          rows="2"
-          placeholder="提交信息..."
+          rows="3"
+          :placeholder="generating ? 'AI 正在生成提交信息...' : '提交信息...'"
           @keydown.meta.enter="handleCommit"
           @keydown.ctrl.enter="handleCommit"
         />
         <button
           class="mt-2.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-          :disabled="!commitMessage.trim() || commitLoading"
+          :disabled="!commitMessage.trim() || commitLoading || generating"
           @click="handleCommit"
         >
           <GitCommitVertical :size="12" />
           <span>{{ commitLoading ? '提交中...' : 'Commit' }}</span>
         </button>
-      </div>
-
-      <!-- AI commit -->
-      <div v-else class="flex-1 flex flex-col min-h-0 border-0">
-        <AiCommitPanel
-          :settings-revision="props.settingsRevision"
-          @commit="handleAiCommit"
-        />
       </div>
     </div>
   </div>

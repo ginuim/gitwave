@@ -23,7 +23,7 @@ export interface CommitLog {
   message: string;
 }
 
-// Settings types (shared between SettingsDialog and AiCommitPanel)
+// Settings types (shared between SettingsDialog and WorkspacePanel)
 export interface ProviderConfig {
   id: string;
   name: string;
