@@ -89,7 +89,7 @@ onMounted(async () => {
     const path = await invoke<string | null>('get_repo_path')
     repoPath.value = path
     if (path) {
-      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind()])
+      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind(), stashList()])
     }
   } catch (_) {
     // ignore
@@ -433,6 +433,7 @@ async function stashSave(message: string | null, includeUntracked: boolean) {
   try {
     await invoke('stash_save', { message, includeUntracked })
     showToast('已暂存', 'success')
+    await Promise.all([stashList(), refreshStatus()])
   } catch (e: any) {
     showToast(String(e))
   }
@@ -461,6 +462,7 @@ async function stashDrop(index: number) {
   try {
     await invoke('stash_drop', { index })
     showToast('已删除 stash@{' + index + '}', 'success')
+    await stashList()
   } catch (e: any) {
     showToast(String(e))
   }

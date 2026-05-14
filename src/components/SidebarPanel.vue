@@ -182,6 +182,11 @@ function cancelStash() {
   stashIncludeUntracked.value = false
 }
 
+function toggleStashSection() {
+  sidebarStashesExpanded.value = !sidebarStashesExpanded.value
+  if (sidebarStashesExpanded.value) emit('stashList')
+}
+
 // --- Stash list ---
 const stashListOpen = ref(false)
 const localStashEntries = ref<{ index: number; message: string; branch: string }[]>([])
@@ -848,7 +853,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
         <div class="mt-1 mb-0.5">
           <button
             class="flex items-center gap-1.5 pl-2 w-full text-xs text-[--text-secondary] uppercase tracking-wide hover:text-[--text-primary] transition-colors cursor-pointer"
-            @click="sidebarStashesExpanded = !sidebarStashesExpanded"
+            @click="toggleStashSection"
           >
             <ChevronRight v-if="!sidebarStashesExpanded" :size="11" />
             <ChevronDown v-else :size="11" />
