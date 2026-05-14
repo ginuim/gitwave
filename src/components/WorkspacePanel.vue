@@ -115,6 +115,7 @@ async function generateCommitMessage() {
   if (!selectedModel.value || generating.value) return
   generating.value = true
   aiError.value = null
+  commitMessage.value = ''
 
   try {
     const model = selectedModel.value
@@ -123,14 +124,11 @@ async function generateCommitMessage() {
     stagedDiff.value = diff
     const prompt = buildPrompt(diff)
 
-    let result: string
     if (model.provider.type === 'openai') {
-      result = await callOpenAI(model.provider, model.name, prompt)
+      await streamOpenAI(model.provider, model.name, prompt)
     } else {
-      result = await callAnthropic(model.provider, model.name, prompt)
+      await streamAnthropic(model.provider, model.name, prompt)
     }
-
-    commitMessage.value = result.trim()
   } catch (e: any) {
     aiError.value = String(e)
   } finally {
@@ -151,7 +149,15 @@ Please generate a commit message for the above staged changes following the conv
 Return ONLY the commit message, nothing else.`
 }
 
-async function callOpenAI(provider: ProviderConfig, model: string, prompt: string): Promise<string> {
+// --- SSE streaming helpers ---
+
+function parseSSELine(line: string): { event?: string; data?: string } | null {
+  if (line.startsWith('event: ')) return { event: line.slice(7).trim() }
+  if (line.startsWith('data: ')) return { data: line.slice(6) }
+  return null
+}
+
+async function streamOpenAI(provider: ProviderConfig, model: string, prompt: string): Promise<void> {
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
   const url = baseUrl.includes('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`
 
@@ -166,23 +172,43 @@ async function callOpenAI(provider: ProviderConfig, model: string, prompt: strin
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 2048,
       temperature: 0.3,
+      stream: true,
     }),
   })
 
-  const rawText = await resp.text()
-  if (!resp.ok) throw new Error(`OpenAI API error (${resp.status}): ${rawText}`)
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`OpenAI API error (${resp.status}): ${text}`)
+  }
 
-  let data: any
-  try { data = JSON.parse(rawText) } catch { throw new Error(`OpenAI returned non-JSON: ${rawText.slice(0, 500)}`) }
+  const reader = resp.body?.getReader()
+  if (!reader) throw new Error('Streaming not supported by HTTP client')
+  const decoder = new TextDecoder()
+  let buffer = ''
 
-  const content = data?.choices?.[0]?.message?.content
-  if (content) return content
-  if (data?.response) return data.response
-  if (data?.text) return data.text
-  throw new Error(`OpenAI returned unexpected format: ${JSON.stringify(data).slice(0, 500)}`)
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed === 'data: [DONE]') continue
+      if (!trimmed.startsWith('data: ')) continue
+
+      try {
+        const data = JSON.parse(trimmed.slice(6))
+        const content = data?.choices?.[0]?.delta?.content
+        if (content) commitMessage.value += content
+      } catch { /* skip malformed JSON lines */ }
+    }
+  }
 }
 
-async function callAnthropic(provider: ProviderConfig, model: string, prompt: string): Promise<string> {
+async function streamAnthropic(provider: ProviderConfig, model: string, prompt: string): Promise<void> {
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
   const url = baseUrl.includes('/v1/messages') ? baseUrl : `${baseUrl}/v1/messages`
 
@@ -197,26 +223,48 @@ async function callAnthropic(provider: ProviderConfig, model: string, prompt: st
       model,
       max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
+      stream: true,
     }),
   })
 
-  const rawText = await resp.text()
-  if (!resp.ok) throw new Error(`Anthropic API error (${resp.status}): ${rawText}`)
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`Anthropic API error (${resp.status}): ${text}`)
+  }
 
-  let data: any
-  try { data = JSON.parse(rawText) } catch { throw new Error(`Anthropic returned non-JSON: ${rawText.slice(0, 500)}`) }
+  const reader = resp.body?.getReader()
+  if (!reader) throw new Error('Streaming not supported by HTTP client')
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let currentEvent = ''
 
-  if (Array.isArray(data?.content)) {
-    for (const block of data.content) {
-      if (block?.type === 'text' && block?.text) return block.text
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+
+      const parsed = parseSSELine(trimmed)
+      if (!parsed) continue
+      if (parsed.event) { currentEvent = parsed.event; continue }
+      if (!parsed.data || parsed.data === '[DONE]') continue
+
+      try {
+        const data = JSON.parse(parsed.data)
+        if (currentEvent === 'content_block_delta' && data?.delta?.text) {
+          commitMessage.value += data.delta.text
+        } else if (currentEvent === 'content_block_start' && data?.content_block?.text) {
+          commitMessage.value += data.content_block.text
+        }
+      } catch { /* skip malformed JSON */ }
     }
   }
-  if (data?.content && typeof data.content === 'string') return data.content
-  const openaiContent = data?.choices?.[0]?.message?.content
-  if (openaiContent) return openaiContent
-  const anyText = data?.completion || data?.text || data?.response
-  if (anyText) return anyText
-  throw new Error(`Anthropic returned unexpected format: ${JSON.stringify(data).slice(0, 500)}`)
 }
 
 // === File list helpers ===
