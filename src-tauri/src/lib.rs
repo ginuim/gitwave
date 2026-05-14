@@ -931,18 +931,18 @@ impl Default for AppSettings {
                 },
             ],
             models: vec![
-                ModelConfig {
-                    id: "model-openai-1".to_string(),
-                    provider_id: "openai-default".to_string(),
-                    name: "gpt-4o".to_string(),
-                    is_default: true,
-                },
-                ModelConfig {
-                    id: "model-anthropic-1".to_string(),
-                    provider_id: "anthropic-default".to_string(),
-                    name: "claude-sonnet-4-20250514".to_string(),
-                    is_default: false,
-                },
+                // ModelConfig {
+                //     id: "model-openai-1".to_string(),
+                //     provider_id: "openai-default".to_string(),
+                //     name: "gpt-4o".to_string(),
+                //     is_default: true,
+                // },
+                // ModelConfig {
+                //     id: "model-anthropic-1".to_string(),
+                //     provider_id: "anthropic-default".to_string(),
+                //     name: "claude-sonnet-4-20250514".to_string(),
+                //     is_default: false,
+                // },
             ],
             prompts: PromptSettings {
                 commit_prompt: r#"## Format Template

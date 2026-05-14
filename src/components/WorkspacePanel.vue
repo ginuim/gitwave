@@ -61,11 +61,18 @@ const hasStagedFiles = computed(() => props.statuses.some(f => f.isStaged))
 const commitPrompt = computed(() => aiSettings.value?.prompts?.commitPrompt || '')
 
 onMounted(async () => {
-  await loadAiData()
+  if (props.repoPath) await loadAiData()
 })
 
 watch(() => props.settingsRevision, () => {
   if (!generating.value) reloadAiSettings()
+})
+
+// Reload when repo path becomes available (e.g. after app init)
+watch(() => props.repoPath, (path) => {
+  if (path && !aiLoading.value && aiError.value) {
+    loadAiData()
+  }
 })
 
 async function reloadAiSettings() {
