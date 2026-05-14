@@ -75,6 +75,17 @@ watch(() => props.repoPath, (path) => {
   }
 })
 
+// Refresh staged diff whenever the staged file list changes
+watch(
+  () => props.statuses.filter(f => f.isStaged).map(f => f.path).join('\0'),
+  async () => {
+    if (!props.repoPath || generating.value) return
+    try {
+      stagedDiff.value = await invoke<string>('get_staged_diff')
+    } catch (_) { /* silent */ }
+  },
+)
+
 async function reloadAiSettings() {
   try {
     const s = await invoke<AppSettings>('load_settings')
@@ -119,10 +130,7 @@ async function generateCommitMessage() {
 
   try {
     const model = selectedModel.value
-    // Re-fetch staged diff to ensure it's up-to-date
-    const diff = await invoke<string>('get_staged_diff')
-    stagedDiff.value = diff
-    const prompt = buildPrompt(diff)
+    const prompt = buildPrompt(stagedDiff.value)
 
     if (model.provider.type === 'openai') {
       await streamOpenAI(model.provider, model.name, prompt)
@@ -172,7 +180,7 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2048,
+      max_tokens: 512,
       temperature: 0.3,
       stream: true,
     }),
@@ -238,7 +246,7 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
     },
     body: JSON.stringify({
       model,
-      max_tokens: 2048,
+      max_tokens: 512,
       messages: [{ role: 'user', content: prompt }],
       stream: true,
     }),
