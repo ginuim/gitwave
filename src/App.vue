@@ -74,7 +74,6 @@ async function openRepo() {
 }
 
 function refreshWorkspaceIfVisible() {
-  if (document.visibilityState !== 'visible') return
   if (!repoPath.value) return
   void syncRefresh({ silentStatus: true })
 }
