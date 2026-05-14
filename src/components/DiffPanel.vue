@@ -31,6 +31,8 @@ interface DiffLine {
 interface HunkInfo {
   header: string   // e.g. "@@ -1,5 +1,7 @@"
   lines: DiffLine[]
+  /** Per-line file line numbers parsed from @@ header; null means "no number" (e.g. header row) */
+  lineNums: { old: number | null; new: number | null }[]
 }
 
 interface FileDiffSection {
@@ -166,9 +168,31 @@ const sections = computed((): FileDiffSection[] => {
         hunkLines.push({ type, content: line, id: nextLineId() })
       }
 
+      // Compute per-line file line numbers from @@ header
+      const headerLine = allLines[start]
+      const headerMatch = headerLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+      const lineNums: HunkInfo['lineNums'] = []
+      let oldLine = headerMatch ? parseInt(headerMatch[1]) : 1
+      let newLine = headerMatch ? parseInt(headerMatch[2]) : 1
+      for (const dl of hunkLines) {
+        if (dl.type === 'header') {
+          lineNums.push({ old: null, new: null })
+        } else if (dl.type === 'context') {
+          lineNums.push({ old: oldLine, new: newLine })
+          oldLine++; newLine++
+        } else if (dl.type === 'added') {
+          lineNums.push({ old: null, new: newLine })
+          newLine++
+        } else {
+          lineNums.push({ old: oldLine, new: null })
+          oldLine++
+        }
+      }
+
       hunks.push({
         header: allLines[start],
         lines: hunkLines,
+        lineNums,
       })
     }
 
@@ -717,7 +741,8 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                   class="flex text-[--text-secondary] transition-colors hover:bg-[--bg-tertiary]"
                 >
                   <div class="flex-shrink-0 w-3" />
-                  <div class="flex-shrink-0 w-8 text-right pr-2.5 select-none text-[--text-secondary]/50">1</div>
+                  <div class="flex-shrink-0 w-7 pr-1 select-none" />
+                  <div class="flex-shrink-0 w-7 pr-2.5 select-none" />
                   <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[0].content }}</span>
                 </div>
                 <template v-for="(seg, bidx) in getHunkBodySegments(hunk)" :key="`${si}-${hi}-${bidx}-${seg.kind}`">
@@ -760,11 +785,13 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                           class="flex-shrink-0 w-3 flex items-center justify-center text-[10px]"
                           :class="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? 'text-green-400' : 'text-transparent'"
                         >{{ hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? '✓' : '○' }}</div>
-                        <div class="flex-shrink-0 w-8 text-right pr-2.5 text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-1 text-[--text-secondary]/35">{{ hunk.lineNums[li]?.old ?? '' }}</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-2.5 text-[--text-secondary]/50">{{ hunk.lineNums[li]?.new ?? '' }}</div>
                       </div>
                       <template v-else>
                         <div class="flex-shrink-0 w-3" />
-                        <div class="flex-shrink-0 w-8 text-right pr-2.5 select-none text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-7 pr-1 select-none" />
+                        <div class="flex-shrink-0 w-7 pr-2.5 select-none" />
                       </template>
                       <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[li]?.content }}</span>
                     </div>
@@ -799,11 +826,13 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                           class="flex-shrink-0 w-3 flex items-center justify-center text-[10px]"
                           :class="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? 'text-green-400' : 'text-transparent'"
                         >{{ hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? '✓' : '○' }}</div>
-                        <div class="flex-shrink-0 w-8 text-right pr-2.5 text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-1 text-[--text-secondary]/35">{{ hunk.lineNums[li]?.old ?? '' }}</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-2.5 text-[--text-secondary]/50">{{ hunk.lineNums[li]?.new ?? '' }}</div>
                       </div>
                       <template v-else>
                         <div class="flex-shrink-0 w-3" />
-                        <div class="flex-shrink-0 w-8 text-right pr-2.5 select-none text-[--text-secondary]/50">{{ li + 1 }}</div>
+                        <div class="flex-shrink-0 w-7 pr-1 select-none" />
+                        <div class="flex-shrink-0 w-7 pr-2.5 select-none" />
                       </template>
                       <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[li]?.content }}</span>
                     </div>
