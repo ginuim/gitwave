@@ -129,6 +129,8 @@ async function generateCommitMessage() {
     } else {
       await streamAnthropic(model.provider, model.name, prompt)
     }
+    // Trim leading whitespace that was appended after content started
+    commitMessage.value = commitMessage.value.trimStart()
   } catch (e: any) {
     aiError.value = String(e)
   } finally {
@@ -182,9 +184,15 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
   }
 
   const reader = resp.body?.getReader()
-  if (!reader) throw new Error('Streaming not supported by HTTP client')
+  if (!reader) {
+    // Fallback: read full response and type it out
+    const text = await resp.text()
+    await typewriterDisplay(text)
+    return
+  }
   const decoder = new TextDecoder()
   let buffer = ''
+  let contentStarted = false
 
   while (true) {
     const { done, value } = await reader.read()
@@ -201,8 +209,16 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
 
       try {
         const data = JSON.parse(trimmed.slice(6))
-        const content = data?.choices?.[0]?.delta?.content
-        if (content) commitMessage.value += content
+        const token = data?.choices?.[0]?.delta?.content
+        if (!token) continue
+        if (!contentStarted) {
+          const trimmedToken = token.replace(/^\s+/, '')
+          if (!trimmedToken) continue
+          commitMessage.value += trimmedToken
+          contentStarted = true
+        } else {
+          commitMessage.value += token
+        }
       } catch { /* skip malformed JSON lines */ }
     }
   }
@@ -233,10 +249,15 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
   }
 
   const reader = resp.body?.getReader()
-  if (!reader) throw new Error('Streaming not supported by HTTP client')
+  if (!reader) {
+    const text = await resp.text()
+    await typewriterDisplay(text)
+    return
+  }
   const decoder = new TextDecoder()
   let buffer = ''
   let currentEvent = ''
+  let contentStarted = false
 
   while (true) {
     const { done, value } = await reader.read()
@@ -257,13 +278,34 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
 
       try {
         const data = JSON.parse(parsed.data)
+        let token = ''
         if (currentEvent === 'content_block_delta' && data?.delta?.text) {
-          commitMessage.value += data.delta.text
+          token = data.delta.text
         } else if (currentEvent === 'content_block_start' && data?.content_block?.text) {
-          commitMessage.value += data.content_block.text
+          token = data.content_block.text
+        }
+        if (!token) continue
+        if (!contentStarted) {
+          const trimmedToken = token.replace(/^\s+/, '')
+          if (!trimmedToken) continue
+          commitMessage.value += trimmedToken
+          contentStarted = true
+        } else {
+          commitMessage.value += token
         }
       } catch { /* skip malformed JSON */ }
     }
+  }
+}
+
+async function typewriterDisplay(text: string): Promise<void> {
+  const trimmed = text.trim()
+  if (!trimmed) return
+  // Reveal word by word for visual typewriter effect
+  const words = trimmed.split(' ')
+  for (let i = 0; i < words.length; i++) {
+    commitMessage.value += (i > 0 ? ' ' : '') + words[i]
+    await new Promise(r => setTimeout(r, 15))
   }
 }
 
