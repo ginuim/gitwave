@@ -185,9 +185,10 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
 
   const reader = resp.body?.getReader()
   if (!reader) {
-    // Fallback: read full response and type it out
-    const text = await resp.text()
-    await typewriterDisplay(text)
+    // Streaming not supported — fall back to reading whole response
+    const rawText = await resp.text()
+    const data = JSON.parse(rawText)
+    commitMessage.value = (data?.choices?.[0]?.message?.content || data?.response || data?.text || '').trim()
     return
   }
   const decoder = new TextDecoder()
@@ -250,8 +251,15 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
 
   const reader = resp.body?.getReader()
   if (!reader) {
-    const text = await resp.text()
-    await typewriterDisplay(text)
+    // Streaming not supported — fall back to reading whole response
+    const rawText = await resp.text()
+    const data = JSON.parse(rawText)
+    if (Array.isArray(data?.content)) {
+      for (const block of data.content) {
+        if (block?.type === 'text' && block?.text) { commitMessage.value = block.text; return }
+      }
+    }
+    commitMessage.value = (data?.content?.text || data?.content || data?.completion || '').trim()
     return
   }
   const decoder = new TextDecoder()
@@ -295,17 +303,6 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
         }
       } catch { /* skip malformed JSON */ }
     }
-  }
-}
-
-async function typewriterDisplay(text: string): Promise<void> {
-  const trimmed = text.trim()
-  if (!trimmed) return
-  // Reveal word by word for visual typewriter effect
-  const words = trimmed.split(' ')
-  for (let i = 0; i < words.length; i++) {
-    commitMessage.value += (i > 0 ? ' ' : '') + words[i]
-    await new Promise(r => setTimeout(r, 15))
   }
 }
 
