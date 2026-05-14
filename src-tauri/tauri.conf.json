@@ -14,7 +14,8 @@
       {
         "title": "GitWave",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "theme": "Dark"
       }
     ],
     "security": {

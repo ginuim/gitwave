@@ -74,8 +74,8 @@ let statusPollTimer: ReturnType<typeof setInterval> | null = null
 
 function refreshWorkspaceIfVisible() {
   if (document.visibilityState !== 'visible') return
-  if (!repoPath.value || activeTab.value !== 'workspace') return
-  void refreshStatus({ silent: true })
+  if (!repoPath.value) return
+  void syncRefresh({ silentStatus: true })
 }
 
 function startWorkspaceStatusSync() {
