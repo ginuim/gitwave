@@ -42,7 +42,14 @@ const emit = defineEmits<{
       </div>
     </div>
 
-    <div v-if="loading" class="flex items-center justify-center py-2.5 text-[--text-secondary]">
+    <!-- Thin loading bar at top during refresh -->
+    <div
+      v-if="loading && logs.length > 0"
+      class="h-[2px] bg-[--accent] opacity-60 animate-pulse flex-shrink-0"
+    />
+
+    <!-- Full-page spinner only on initial load -->
+    <div v-if="loading && logs.length === 0" class="flex items-center justify-center py-2.5 text-[--text-secondary]">
       <Loader2 :size="14" class="animate-spin mr-2.5" />
       <span class="text-xs">加载中...</span>
     </div>

@@ -373,7 +373,8 @@ async function showInFolder(relPath: string, e: Event) {
               :disabled="generating || aiLoading || !hasStagedFiles"
               @click="generateCommitMessage"
             >
-              <Sparkles :size="12" />
+              <Loader2 v-if="generating" :size="12" class="animate-spin" />
+              <Sparkles v-else :size="12" />
               <span>{{ generating ? '生成中...' : '生成提交信息' }}</span>
             </button>
           </div>
