@@ -37,6 +37,8 @@ const stashEntries = ref<any[]>([])
 const tags = ref<string[]>([])
 const settingsOpen = ref(false)
 const settingsRevision = ref(0)
+/** 提交成功后递增，驱动工作区「已提交」短提示（避免用 commitLoading 启发式推断） */
+const commitSuccessTick = ref(0)
 
 const historyFilter = ref<'current' | 'all'>('current')
 const currentBranch = computed(() => branches.value.find(b => b.isCurrent)?.name ?? '')
@@ -78,9 +80,16 @@ async function openRepo() {
   }
 }
 
+let debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
 function refreshWorkspaceIfVisible() {
   if (!repoPath.value) return
-  void syncRefresh({ silentStatus: true })
+  if (document.visibilityState === 'hidden') return
+  if (debouncedRefreshTimer) clearTimeout(debouncedRefreshTimer)
+  debouncedRefreshTimer = setTimeout(() => {
+    debouncedRefreshTimer = null
+    void syncRefresh({ silentStatus: true })
+  }, 400)
 }
 
 // Get repo path on mount
@@ -104,6 +113,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (debouncedRefreshTimer) clearTimeout(debouncedRefreshTimer)
   window.removeEventListener('focus', refreshWorkspaceIfVisible)
   document.removeEventListener('visibilitychange', refreshWorkspaceIfVisible)
 })
@@ -214,15 +224,18 @@ async function unstageFile(path: string) {
 // Commit
 async function commitChanges(message: string) {
   commitLoading.value = true
+  let ok = false
   try {
     await invoke('commit_changes', { message })
     showToast('提交成功', 'success')
     await Promise.all([refreshStatus(), refreshAheadBehind()])
+    ok = true
   } catch (e: any) {
     showToast(String(e))
   } finally {
     commitLoading.value = false
   }
+  if (ok) commitSuccessTick.value++
 }
 
 // Select file - show diff
@@ -495,12 +508,17 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
     // Clear commit selection when switching back to workspace
     selectedCommitHash.value = null
     selectedCommitMsg.value = ''
-    // Re-fetch diff for the selected file if still relevant
+    // Re-fetch diff for the selected file if still relevant（与列表侧一致：同一路径可能同时有 staged / unstaged 行）
     if (selectedFile.value && statuses.value.some(s => s.path === selectedFile.value)) {
+      const match =
+        statuses.value.find(
+          (s) => s.path === selectedFile.value && s.isStaged === selectedFileIsStaged.value,
+        ) ?? statuses.value.find((s) => s.path === selectedFile.value)
+      const isStaged = match?.isStaged ?? selectedFileIsStaged.value
       try {
         diffText.value = await invoke<string>('get_file_diff', {
           path: selectedFile.value,
-          isStaged: false,
+          isStaged,
         })
       } catch {
         diffText.value = ''
@@ -562,6 +580,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :statuses="statuses"
         :selected-file="selectedFile"
         :commit-loading="commitLoading"
+        :commit-success-tick="commitSuccessTick"
         :status-loading="statusLoading"
         :repo-path="repoPath"
         :settings-revision="settingsRevision"
@@ -570,6 +589,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @select-file="selectFile"
         @commit="commitChanges"
         @reveal-error="showToast($event)"
+        @open-settings="settingsOpen = true"
       />
       <!-- History tab -->
       <HistoryTab
