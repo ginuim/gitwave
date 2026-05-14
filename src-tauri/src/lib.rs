@@ -783,6 +783,13 @@ fn create_tag(state: State<'_, AppState>, name: String, message: Option<String>)
     run_git(&repo, &args)
 }
 
+#[tauri::command]
+fn get_tags(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let repo = require_repo(&state)?;
+    let raw = run_git(&repo, &["tag", "--sort=-creatordate"])?;
+    Ok(raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+}
+
 // === Stash ===
 
 #[tauri::command]
@@ -1123,6 +1130,7 @@ pub fn run() {
             unpin_branch,
             get_pinned_branches,
             create_tag,
+            get_tags,
             stash_save,
             stash_list,
             stash_apply,

@@ -18,6 +18,7 @@ const props = defineProps<{
   recentRepos: string[]
   pinnedBranches: string[]
   stashEntries: { index: number; message: string; branch: string }[]
+  tags: string[]
   aheadBehind: AheadBehind
   fetchLoading: boolean
 }>()
@@ -135,6 +136,10 @@ function dirName(path: string): string {
   const parts = path.replace(/\\/g, '/').split('/')
   return parts[parts.length - 1] || path
 }
+
+const sidebarRemoteExpanded = ref(false)
+const sidebarTagsExpanded = ref(false)
+const sidebarStashesExpanded = ref(false)
 
 // --- Tag dialog ---
 const tagDialog = ref<{ branch: string; name: string; message: string } | null>(null)
@@ -624,8 +629,8 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
 
       <template v-if="branches.length > 0">
         <!-- Pinned branches -->
-        <div v-if="pinnedLocalBranches.length > 0" class="flex items-center gap-1.5 mt-1 mb-0.5 pl-2 text-[10px] text-[--text-secondary] uppercase tracking-wide">
-          <Pin :size="10" class="text-yellow-400" />
+        <div v-if="pinnedLocalBranches.length > 0" class="flex items-center gap-1.5 mt-1 mb-0.5 pl-2 text-xs text-[--text-secondary] uppercase tracking-wide">
+          <Pin :size="11" class="text-yellow-400" />
           <span>已固定</span>
         </div>
         <div
@@ -723,48 +728,113 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
           </button>
         </div>
 
-        <!-- Remote branches -->
-        <div
-          v-if="remoteBranches.length > 0"
-          class="flex items-center gap-1.5 mt-1 mb-0.5 pl-2 text-[10px] text-[--text-secondary] uppercase tracking-wide"
-        >
-          <Globe :size="10" />
-          <span>远程</span>
-        </div>
-        <div
-          v-for="node in remoteBranches"
-          :key="node.key"
-          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
-          :class="node.isLeaf
-            ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
-            : 'text-[--text-secondary] hover:text-[--text-primary]'"
-          :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
-          @click="node.isLeaf ? emit('checkoutRemote', node.key) : toggleGroup(node.key)"
-        >
+        <!-- Remote branches (collapsed by default) -->
+        <div class="mt-1 mb-0.5">
           <button
-            v-if="!node.isLeaf"
-            class="flex-shrink-0 p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer"
-            @click.stop="toggleGroup(node.key)"
+            class="flex items-center gap-1.5 pl-2 w-full text-xs text-[--text-secondary] uppercase tracking-wide hover:text-[--text-primary] transition-colors cursor-pointer"
+            @click="sidebarRemoteExpanded = !sidebarRemoteExpanded"
           >
-            <ChevronRight
-              v-if="!expandedGroups.has(node.key)"
-              :size="12"
-              class="text-[--text-secondary]"
-            />
-            <ChevronDown
-              v-else
-              :size="12"
-              class="text-[--text-secondary]"
-            />
+            <ChevronRight v-if="!sidebarRemoteExpanded" :size="11" />
+            <ChevronDown v-else :size="11" />
+            <Globe :size="11" />
+            <span>远程</span>
           </button>
+          <div v-if="sidebarRemoteExpanded">
+            <div
+              v-for="node in remoteBranches"
+              :key="node.key"
+              class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
+              :class="node.isLeaf
+                ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
+                : 'text-[--text-secondary] hover:text-[--text-primary]'"
+              :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
+              @click="node.isLeaf ? emit('checkoutRemote', node.key) : toggleGroup(node.key)"
+            >
+              <button
+                v-if="!node.isLeaf"
+                class="flex-shrink-0 p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer"
+                @click.stop="toggleGroup(node.key)"
+              >
+                <ChevronRight
+                  v-if="!expandedGroups.has(node.key)"
+                  :size="12"
+                  class="text-[--text-secondary]"
+                />
+                <ChevronDown
+                  v-else
+                  :size="12"
+                  class="text-[--text-secondary]"
+                />
+              </button>
 
-          <Globe v-if="node.isLeaf" :size="12" class="flex-shrink-0" />
+              <Globe v-if="node.isLeaf" :size="13" class="flex-shrink-0" />
 
-          <span class="truncate">{{ node.label }}</span>
-          <span
-            v-if="node.isHead"
-            class="flex-shrink-0 ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[--accent] text-white leading-none"
-          >HEAD</span>
+              <span class="truncate">{{ node.label }}</span>
+              <span
+                v-if="node.isHead"
+                class="flex-shrink-0 ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[--accent] text-white leading-none"
+              >HEAD</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tags (collapsed by default) -->
+        <div class="mt-1 mb-0.5">
+          <button
+            class="flex items-center gap-1.5 pl-2 w-full text-xs text-[--text-secondary] uppercase tracking-wide hover:text-[--text-primary] transition-colors cursor-pointer"
+            @click="sidebarTagsExpanded = !sidebarTagsExpanded"
+          >
+            <ChevronRight v-if="!sidebarTagsExpanded" :size="11" />
+            <ChevronDown v-else :size="11" />
+            <Tag :size="11" />
+            <span>标签</span>
+          </button>
+          <div v-if="sidebarTagsExpanded" class="mt-1 space-y-0.5">
+            <div v-if="props.tags.length === 0" class="text-xs text-[--text-secondary] pl-7 py-1">
+              暂无标签
+            </div>
+            <div
+              v-for="tag in props.tags"
+              :key="tag"
+              class="flex items-center gap-1.5 pl-7 pr-2 py-1 rounded text-xs text-[--text-secondary]"
+            >
+              <Tag :size="12" />
+              <span class="truncate">{{ tag }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stashes (collapsed by default) -->
+        <div class="mt-1 mb-0.5">
+          <button
+            class="flex items-center gap-1.5 pl-2 w-full text-xs text-[--text-secondary] uppercase tracking-wide hover:text-[--text-primary] transition-colors cursor-pointer"
+            @click="sidebarStashesExpanded = !sidebarStashesExpanded"
+          >
+            <ChevronRight v-if="!sidebarStashesExpanded" :size="11" />
+            <ChevronDown v-else :size="11" />
+            <Archive :size="11" />
+            <span>Stashes</span>
+          </button>
+          <div v-if="sidebarStashesExpanded" class="mt-1 space-y-0.5">
+            <div v-if="props.stashEntries.length === 0" class="text-xs text-[--text-secondary] pl-7 py-1">
+              暂无 Stash
+            </div>
+            <div
+              v-for="entry in props.stashEntries"
+              :key="entry.index"
+              class="flex items-center gap-1.5 pl-7 pr-2 py-1 rounded text-xs text-[--text-secondary] group"
+            >
+              <Archive :size="12" class="flex-shrink-0" />
+              <div class="flex-1 min-w-0">
+                <div class="truncate">{{ entry.message || '(无说明)' }}</div>
+                <div class="text-xs opacity-60">{{ entry.branch ? 'On ' + entry.branch : '' }}</div>
+              </div>
+              <button
+                class="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-[--accent] text-white hover:bg-[--accent-hover] opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                @click.stop="emit('stashApply', entry.index)"
+              >恢复</button>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -951,7 +1021,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
             @keydown.escape="cancelStash"
           />
           <label
-            class="flex items-center gap-2 mt-2.5 cursor-pointer text-[11px] text-[--text-secondary] hover:text-[--text-primary] transition-colors"
+            class="flex items-center gap-2 mt-2.5 cursor-pointer text-xs text-[--text-secondary] hover:text-[--text-primary] transition-colors"
           >
             <input
               v-model="stashIncludeUntracked"

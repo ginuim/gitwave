@@ -34,6 +34,7 @@ const branchesLoading = ref(false)
 const recentRepos = ref<string[]>([])
 const pinnedBranches = ref<string[]>([])
 const stashEntries = ref<any[]>([])
+const tags = ref<string[]>([])
 const settingsOpen = ref(false)
 const settingsRevision = ref(0)
 
@@ -96,6 +97,7 @@ onMounted(async () => {
   // Always load recent repos regardless of current session state
   await refreshRecentRepos()
   await refreshPinnedBranches()
+  await refreshTags()
 
   window.addEventListener('focus', refreshWorkspaceIfVisible)
   document.addEventListener('visibilitychange', refreshWorkspaceIfVisible)
@@ -136,6 +138,15 @@ async function refreshPinnedBranches() {
   }
 }
 
+async function refreshTags() {
+  if (!repoPath.value) return
+  try {
+    tags.value = await invoke<string[]>('get_tags')
+  } catch (_) {
+    // ignore
+  }
+}
+
 async function syncRefresh(opts?: { silentStatus?: boolean }) {
   const tasks = [
     refreshStatus(opts?.silentStatus ? { silent: true } : undefined),
@@ -155,6 +166,7 @@ async function switchRepo(path: string) {
     repoPath.value = path
     showToast('已切换仓库', 'success')
     await syncRefresh()
+    await refreshTags()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -523,6 +535,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @create-branch="createBranch"
         :pinned-branches="pinnedBranches"
         :stash-entries="stashEntries"
+        :tags="tags"
         @pin-branch="pinBranch"
         @unpin-branch="unpinBranch"
         @create-tag="createTag"
