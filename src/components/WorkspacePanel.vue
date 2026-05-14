@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2 } from 'lucide-vue-next'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles } from 'lucide-vue-next'
 import type { FileStatus } from '../types'
+import AiCommitPanel from './AiCommitPanel.vue'
 
 const props = defineProps<{
   statuses: FileStatus[]
@@ -11,6 +12,7 @@ const props = defineProps<{
   commitLoading: boolean
   statusLoading: boolean
   repoPath: string | null
+  settingsRevision: number
 }>()
 
 const emit = defineEmits<{
@@ -21,12 +23,31 @@ const emit = defineEmits<{
   revealError: [message: string]
 }>()
 
+// Commit tab state (persisted in localStorage)
+const COMMIT_TAB_KEY = 'gitwave-commit-tab'
 const commitMessage = ref('')
+const commitTab = ref<string>('manual')
+
+onMounted(() => {
+  const saved = localStorage.getItem(COMMIT_TAB_KEY)
+  if (saved === 'manual' || saved === 'ai') {
+    commitTab.value = saved
+  }
+})
+
+function switchTab(tab: 'manual' | 'ai') {
+  commitTab.value = tab
+  localStorage.setItem(COMMIT_TAB_KEY, tab)
+}
 
 function handleCommit() {
   if (!commitMessage.value.trim()) return
   emit('commit', commitMessage.value)
   commitMessage.value = ''
+}
+
+function handleAiCommit(msg: string) {
+  emit('commit', msg)
 }
 
 const unstagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => !f.isStaged)
@@ -150,24 +171,59 @@ async function showInFolder(relPath: string, e: Event) {
       </div>
     </div>
 
-    <!-- Commit Form -->
-    <div class="border-t border-[--border-color] p-2.5 bg-[--bg-secondary] flex-shrink-0">
-      <textarea
-        v-model="commitMessage"
-        class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-tertiary] border border-[--border-color] text-xs text-[--text-primary] placeholder-[--text-secondary] resize-none outline-none focus:border-[--accent] transition-colors font-mono-ui leading-relaxed"
-        rows="2"
-        placeholder="提交信息..."
-        @keydown.meta.enter="handleCommit"
-        @keydown.ctrl.enter="handleCommit"
-      />
-      <button
-        class="mt-2.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-        :disabled="!commitMessage.trim() || commitLoading"
-        @click="handleCommit"
-      >
-        <GitCommitVertical :size="12" />
-        <span>{{ commitLoading ? '提交中...' : 'Commit' }}</span>
-      </button>
+    <!-- Commit Form (tabs: manual / AI) -->
+    <div class="border-t border-[--border-color] bg-[--bg-secondary] flex-shrink-0 flex flex-col min-h-0">
+      <!-- Tab switcher -->
+      <div class="flex border-b border-[--border-color]">
+        <button
+          class="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs transition-colors cursor-pointer"
+          :class="commitTab === 'manual'
+            ? 'text-[--accent] border-b-2 border-[--accent] bg-[--bg-tertiary]'
+            : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
+          @click="switchTab('manual')"
+        >
+          <GitCommitVertical :size="12" />
+          <span>手动提交</span>
+        </button>
+        <button
+          class="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs transition-colors cursor-pointer"
+          :class="commitTab === 'ai'
+            ? 'text-[--accent] border-b-2 border-[--accent] bg-[--bg-tertiary]'
+            : 'text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary]'"
+          @click="switchTab('ai')"
+        >
+          <Sparkles :size="12" />
+          <span>AI 提交</span>
+        </button>
+      </div>
+
+      <!-- Manual commit -->
+      <div v-if="commitTab === 'manual'" class="p-2.5">
+        <textarea
+          v-model="commitMessage"
+          class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-tertiary] border border-[--border-color] text-xs text-[--text-primary] placeholder-[--text-secondary] resize-none outline-none focus:border-[--accent] transition-colors font-mono-ui leading-relaxed"
+          rows="2"
+          placeholder="提交信息..."
+          @keydown.meta.enter="handleCommit"
+          @keydown.ctrl.enter="handleCommit"
+        />
+        <button
+          class="mt-2.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          :disabled="!commitMessage.trim() || commitLoading"
+          @click="handleCommit"
+        >
+          <GitCommitVertical :size="12" />
+          <span>{{ commitLoading ? '提交中...' : 'Commit' }}</span>
+        </button>
+      </div>
+
+      <!-- AI commit -->
+      <div v-else class="flex-1 flex flex-col min-h-0 border-0">
+        <AiCommitPanel
+          :settings-revision="props.settingsRevision"
+          @commit="handleAiCommit"
+        />
+      </div>
     </div>
   </div>
 </template>

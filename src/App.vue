@@ -34,6 +34,7 @@ const recentRepos = ref<string[]>([])
 const pinnedBranches = ref<string[]>([])
 const stashEntries = ref<any[]>([])
 const settingsOpen = ref(false)
+const settingsRevision = ref(0)
 
 const historyFilter = ref<'current' | 'all'>('current')
 const currentBranch = computed(() => branches.value.find(b => b.isCurrent)?.name ?? '')
@@ -560,6 +561,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :commit-loading="commitLoading"
         :status-loading="statusLoading"
         :repo-path="repoPath"
+        :settings-revision="settingsRevision"
         @stage-file="stageFile"
         @unstage-file="unstageFile"
         @select-file="selectFile"
@@ -612,5 +614,6 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
     <SettingsDialog
       :show="settingsOpen"
       @close="settingsOpen = false"
+      @saved="settingsRevision++"
     />
 </template>

@@ -2,34 +2,7 @@
 import { ref, reactive, watch, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { X, Plus, Trash2, Settings, Globe, Bot, FileText, Star } from 'lucide-vue-next'
-
-export interface ProviderConfig {
-  id: string
-  name: string
-  type: 'openai' | 'anthropic'
-  baseUrl: string
-  apiKey: string
-  isDefault: boolean
-}
-
-export interface ModelConfig {
-  id: string
-  providerId: string
-  name: string
-  isDefault: boolean
-}
-
-export interface AppSettings {
-  general: {
-    userName: string
-    userEmail: string
-  }
-  providers: ProviderConfig[]
-  models: ModelConfig[]
-  prompts: {
-    commitPrompt: string
-  }
-}
+import type { AppSettings, ProviderConfig, ModelConfig } from '../types'
 
 const props = defineProps<{
   show: boolean
@@ -37,6 +10,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
+  saved: []
 }>()
 
 // Tab state
@@ -115,6 +89,8 @@ async function saveSettings() {
       // may fail if no repo open
     }
     showToast('设置已保存', 'success')
+    emit('saved')
+    setTimeout(() => emit('close'), 800)
   } catch (e: any) {
     showToast(String(e))
   } finally {

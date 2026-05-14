@@ -22,3 +22,32 @@ export interface CommitLog {
   date: string;
   message: string;
 }
+
+// Settings types (shared between SettingsDialog and AiCommitPanel)
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  type: 'openai' | 'anthropic';
+  baseUrl: string;
+  apiKey: string;
+  isDefault: boolean;
+}
+
+export interface ModelConfig {
+  id: string;
+  providerId: string;
+  name: string;
+  isDefault: boolean;
+}
+
+export interface AppSettings {
+  general: {
+    userName: string;
+    userEmail: string;
+  };
+  providers: ProviderConfig[];
+  models: ModelConfig[];
+  prompts: {
+    commitPrompt: string;
+  };
+}

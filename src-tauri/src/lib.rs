@@ -845,6 +845,14 @@ fn stash_drop(state: State<'_, AppState>, index: usize) -> Result<String, String
     run_git(&repo, &["stash", "drop", &format!("stash@{{{index}}}")])
 }
 
+// === AI Commit ===
+
+#[tauri::command]
+fn get_staged_diff(state: State<'_, AppState>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["diff", "--cached"])
+}
+
 // === Settings ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1119,6 +1127,7 @@ pub fn run() {
             stash_apply,
             stash_drop,
             stash_file,
+            get_staged_diff,
             get_git_config,
             set_git_config,
             load_settings,
