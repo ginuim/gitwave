@@ -70,7 +70,7 @@ async function openRepo() {
     const path = await invoke<string>('open_repository')
     repoPath.value = path
     showToast('仓库已打开', 'success')
-    await Promise.all([syncRefresh(), refreshRecentRepos()])
+    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), stashList()])
   } catch (e: any) {
     if (e !== 'dialog cancelled') {
       showToast(String(e))
@@ -422,6 +422,7 @@ async function createTag(name: string, message?: string) {
   try {
     await invoke('create_tag', { name, message: message || null })
     showToast('标签 ' + name + ' 已创建', 'success')
+    await refreshTags()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -543,6 +544,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @create-tag="createTag"
         @stash-save="stashSave"
         @stash-list="stashList"
+        @tags-list="refreshTags"
         @stash-apply="stashApply"
         @stash-drop="stashDrop"
         @fetch="gitFetch"

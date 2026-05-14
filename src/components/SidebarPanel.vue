@@ -38,6 +38,7 @@ const emit = defineEmits<{
   createTag: [name: string, message?: string]
   stashSave: [message: string | null, includeUntracked: boolean]
   stashList: []
+  tagsList: []
   stashApply: [index: number]
   stashDrop: [index: number]
   fetch: []
@@ -140,6 +141,11 @@ function dirName(path: string): string {
 const sidebarRemoteExpanded = ref(false)
 const sidebarTagsExpanded = ref(false)
 const sidebarStashesExpanded = ref(false)
+
+function toggleTagsSection() {
+  sidebarTagsExpanded.value = !sidebarTagsExpanded.value
+  if (sidebarTagsExpanded.value) emit('tagsList')
+}
 
 // --- Tag dialog ---
 const tagDialog = ref<{ branch: string; name: string; message: string } | null>(null)
@@ -827,7 +833,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
         <div class="mt-1 mb-0.5">
           <button
             class="flex items-center gap-1.5 pl-2 w-full text-xs text-[--text-secondary] uppercase tracking-wide hover:text-[--text-primary] transition-colors cursor-pointer"
-            @click="sidebarTagsExpanded = !sidebarTagsExpanded"
+            @click="toggleTagsSection"
           >
             <ChevronRight v-if="!sidebarTagsExpanded" :size="11" />
             <ChevronDown v-else :size="11" />
