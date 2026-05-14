@@ -128,18 +128,25 @@ async function generateCommitMessage() {
   aiError.value = null
   commitMessage.value = ''
 
+  const t0 = performance.now()
+  const log = (msg: string) => console.log(`[AI] +${(performance.now() - t0).toFixed(0)}ms ${msg}`)
+
   try {
     const model = selectedModel.value
+    log(`start — model=${model.name} provider=${model.provider.type} baseUrl=${model.provider.baseUrl}`)
+
     const prompt = buildPrompt(stagedDiff.value)
+    log(`prompt built — ${prompt.length} chars, diff=${stagedDiff.value.length} chars`)
 
     if (model.provider.type === 'openai') {
-      await streamOpenAI(model.provider, model.name, prompt)
+      await streamOpenAI(model.provider, model.name, prompt, log)
     } else {
-      await streamAnthropic(model.provider, model.name, prompt)
+      await streamAnthropic(model.provider, model.name, prompt, log)
     }
-    // Trim leading whitespace that was appended after content started
     commitMessage.value = commitMessage.value.trimStart()
+    log(`done — total=${commitMessage.value.length} chars`)
   } catch (e: any) {
+    console.error('[AI] error', e)
     aiError.value = String(e)
   } finally {
     generating.value = false
@@ -167,9 +174,10 @@ function parseSSELine(line: string): { event?: string; data?: string } | null {
   return null
 }
 
-async function streamOpenAI(provider: ProviderConfig, model: string, prompt: string): Promise<void> {
+async function streamOpenAI(provider: ProviderConfig, model: string, prompt: string, log: (msg: string) => void): Promise<void> {
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
   const url = baseUrl.includes('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`
+  log(`fetch → ${url}`)
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -185,6 +193,7 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
       stream: true,
     }),
   })
+  log(`response received — status=${resp.status} hasBody=${!!resp.body}`)
 
   if (!resp.ok) {
     const text = await resp.text()
@@ -193,19 +202,26 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
 
   const reader = resp.body?.getReader()
   if (!reader) {
-    // Streaming not supported — fall back to reading whole response
+    log('no reader — falling back to full response')
     const rawText = await resp.text()
     const data = JSON.parse(rawText)
     commitMessage.value = (data?.choices?.[0]?.message?.content || data?.response || data?.text || '').trim()
     return
   }
+
+  log('reader acquired — starting stream read')
   const decoder = new TextDecoder()
   let buffer = ''
   let contentStarted = false
+  let chunkCount = 0
 
   while (true) {
     const { done, value } = await reader.read()
-    if (done) break
+    if (done) {
+      log(`stream done — ${chunkCount} chunks received`)
+      break
+    }
+    chunkCount++
     buffer += decoder.decode(value, { stream: true })
 
     const lines = buffer.split('\n')
@@ -223,6 +239,7 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
         if (!contentStarted) {
           const trimmedToken = token.replace(/^\s+/, '')
           if (!trimmedToken) continue
+          log(`first token arrived — chunk #${chunkCount}`)
           commitMessage.value += trimmedToken
           contentStarted = true
         } else {
@@ -233,9 +250,10 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
   }
 }
 
-async function streamAnthropic(provider: ProviderConfig, model: string, prompt: string): Promise<void> {
+async function streamAnthropic(provider: ProviderConfig, model: string, prompt: string, log: (msg: string) => void): Promise<void> {
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
   const url = baseUrl.includes('/v1/messages') ? baseUrl : `${baseUrl}/v1/messages`
+  log(`fetch → ${url}`)
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -246,11 +264,12 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
     },
     body: JSON.stringify({
       model,
-      max_tokens: 512,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
       stream: true,
     }),
   })
+  log(`response received — status=${resp.status} hasBody=${!!resp.body}`)
 
   if (!resp.ok) {
     const text = await resp.text()
@@ -259,7 +278,7 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
 
   const reader = resp.body?.getReader()
   if (!reader) {
-    // Streaming not supported — fall back to reading whole response
+    log('no reader — falling back to full response')
     const rawText = await resp.text()
     const data = JSON.parse(rawText)
     if (Array.isArray(data?.content)) {
@@ -270,15 +289,28 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
     commitMessage.value = (data?.content?.text || data?.content || data?.completion || '').trim()
     return
   }
+
+  log('reader acquired — starting stream read')
   const decoder = new TextDecoder()
   let buffer = ''
   let currentEvent = ''
   let contentStarted = false
+  let chunkCount = 0
 
   while (true) {
+    const chunkStart = performance.now()
     const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
+    if (done) {
+      log(`stream done — ${chunkCount} chunks received`)
+      break
+    }
+    chunkCount++
+    const raw = decoder.decode(value, { stream: true })
+    const waitMs = (performance.now() - chunkStart).toFixed(0)
+    if (chunkCount <= 5) {
+      log(`chunk #${chunkCount} arrived (waited ${waitMs}ms, ${raw.length} bytes): ${JSON.stringify(raw.slice(0, 300))}`)
+    }
+    buffer += raw
 
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
@@ -300,10 +332,16 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
         } else if (currentEvent === 'content_block_start' && data?.content_block?.text) {
           token = data.content_block.text
         }
+        // Fallback: OpenAI-style delta inside Anthropic-compat endpoint
+        if (!token && data?.choices?.[0]?.delta?.content) {
+          token = data.choices[0].delta.content
+          if (!contentStarted) log(`detected OpenAI-style delta in Anthropic endpoint`)
+        }
         if (!token) continue
         if (!contentStarted) {
           const trimmedToken = token.replace(/^\s+/, '')
           if (!trimmedToken) continue
+          log(`first token arrived — chunk #${chunkCount} event=${currentEvent}`)
           commitMessage.value += trimmedToken
           contentStarted = true
         } else {
