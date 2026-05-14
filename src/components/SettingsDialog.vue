@@ -59,6 +59,10 @@ async function loadSettings() {
   try {
     const data = await invoke<AppSettings>('load_settings')
     Object.assign(settings, data)
+    // Reset selected provider index if out of range
+    if (selectedProviderIdx.value >= settings.providers.length) {
+      selectedProviderIdx.value = Math.max(0, settings.providers.length - 1)
+    }
     // Also load git config
     try {
       const gitConfig = await invoke<{ userName: string; userEmail: string }>('get_git_config')
@@ -138,14 +142,22 @@ function addModel() {
   })
 }
 
-function removeModel(idx: number) {
-  settings.models.splice(idx, 1)
-}
-
-function setDefaultModel(idx: number) {
+function removeModel(listIdx: number) {
   const prov = selectedProvider.value
   if (!prov) return
-  const model = settings.models[idx]
+  const filtered = settings.models.filter(m => m.providerId === prov.id)
+  const model = filtered[listIdx]
+  if (!model) return
+  const realIdx = settings.models.findIndex(m => m.id === model.id)
+  if (realIdx === -1) return
+  settings.models.splice(realIdx, 1)
+}
+
+function setDefaultModel(listIdx: number) {
+  const prov = selectedProvider.value
+  if (!prov) return
+  const filtered = settings.models.filter(m => m.providerId === prov.id)
+  const model = filtered[listIdx]
   if (!model) return
   // Unset all other models for this provider
   settings.models.forEach(m => {

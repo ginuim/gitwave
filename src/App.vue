@@ -73,25 +73,10 @@ async function openRepo() {
   }
 }
 
-const STATUS_POLL_MS = 10_000
-let statusPollTimer: ReturnType<typeof setInterval> | null = null
-
 function refreshWorkspaceIfVisible() {
   if (document.visibilityState !== 'visible') return
   if (!repoPath.value) return
   void syncRefresh({ silentStatus: true })
-}
-
-function startWorkspaceStatusSync() {
-  if (statusPollTimer != null) return
-  statusPollTimer = setInterval(refreshWorkspaceIfVisible, STATUS_POLL_MS)
-}
-
-function stopWorkspaceStatusSync() {
-  if (statusPollTimer != null) {
-    clearInterval(statusPollTimer)
-    statusPollTimer = null
-  }
 }
 
 // Get repo path on mount
@@ -111,13 +96,11 @@ onMounted(async () => {
 
   window.addEventListener('focus', refreshWorkspaceIfVisible)
   document.addEventListener('visibilitychange', refreshWorkspaceIfVisible)
-  startWorkspaceStatusSync()
 })
 
 onUnmounted(() => {
   window.removeEventListener('focus', refreshWorkspaceIfVisible)
   document.removeEventListener('visibilitychange', refreshWorkspaceIfVisible)
-  stopWorkspaceStatusSync()
 })
 
 // Refresh branches
