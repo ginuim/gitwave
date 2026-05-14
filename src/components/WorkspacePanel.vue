@@ -4,13 +4,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, RefreshCw, Check } from 'lucide-vue-next'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings } from 'lucide-vue-next'
 import type { FileStatus, AppSettings, ProviderConfig, ModelConfig } from '../types'
 
 const props = defineProps<{
   statuses: FileStatus[]
   selectedFile: string | null
   commitLoading: boolean
+  /** 父组件在提交成功后递增，用于显示「已提交」短提示 */
+  commitSuccessTick: number
   statusLoading: boolean
   repoPath: string | null
   settingsRevision: number
@@ -22,6 +24,7 @@ const emit = defineEmits<{
   selectFile: [path: string, isStaged: boolean]
   commit: [message: string]
   revealError: [message: string]
+  openSettings: []
 }>()
 
 // === Manual commit state ===
@@ -32,17 +35,22 @@ let commitSuccessTimer: ReturnType<typeof setTimeout> | null = null
 watch(() => props.commitLoading, (loading) => {
   if (loading && commitSuccess.value) {
     commitSuccess.value = false
-    if (commitSuccessTimer) { clearTimeout(commitSuccessTimer); commitSuccessTimer = null }
-    return
+    if (commitSuccessTimer) {
+      clearTimeout(commitSuccessTimer)
+      commitSuccessTimer = null
+    }
   }
-  if (!loading && commitMessage.value === '' && !commitSuccess.value && !generating.value) {
-    // commit just finished — show success briefly
-    commitSuccess.value = true
-    if (commitSuccessTimer) clearTimeout(commitSuccessTimer)
-    commitSuccessTimer = setTimeout(() => {
-      commitSuccess.value = false
-    }, 2000)
-  }
+})
+
+watch(() => props.commitSuccessTick, (tick, prevTick) => {
+  if (tick <= 0) return
+  if (prevTick !== undefined && tick <= prevTick) return
+  commitSuccess.value = true
+  if (commitSuccessTimer) clearTimeout(commitSuccessTimer)
+  commitSuccessTimer = setTimeout(() => {
+    commitSuccess.value = false
+    commitSuccessTimer = null
+  }, 2000)
 })
 
 function handleCommit() {
@@ -222,8 +230,15 @@ async function streamOpenAI(provider: ProviderConfig, model: string, prompt: str
   if (!reader) {
     log('no reader — falling back to full response')
     const rawText = await resp.text()
-    const data = JSON.parse(rawText)
-    commitMessage.value = (data?.choices?.[0]?.message?.content || data?.response || data?.text || '').trim()
+    let data: unknown
+    try {
+      data = JSON.parse(rawText)
+    } catch {
+      throw new Error(`OpenAI returned non-JSON response: ${rawText.slice(0, 500)}`)
+    }
+    const d = data as Record<string, unknown>
+    const fromChoices = (d?.choices as { message?: { content?: string } }[] | undefined)?.[0]?.message?.content
+    commitMessage.value = (fromChoices || (d?.response as string) || (d?.text as string) || '').trim()
     return
   }
 
@@ -298,13 +313,27 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
   if (!reader) {
     log('no reader — falling back to full response')
     const rawText = await resp.text()
-    const data = JSON.parse(rawText)
-    if (Array.isArray(data?.content)) {
-      for (const block of data.content) {
-        if (block?.type === 'text' && block?.text) { commitMessage.value = block.text; return }
+    let data: unknown
+    try {
+      data = JSON.parse(rawText)
+    } catch {
+      throw new Error(`Anthropic returned non-JSON response: ${rawText.slice(0, 500)}`)
+    }
+    const d = data as Record<string, unknown>
+    if (Array.isArray(d?.content)) {
+      for (const block of d.content as { type?: string; text?: string }[]) {
+        if (block?.type === 'text' && block?.text) {
+          commitMessage.value = block.text
+          return
+        }
       }
     }
-    commitMessage.value = (data?.content?.text || data?.content || data?.completion || '').trim()
+    const c = d?.content
+    commitMessage.value = (
+      (typeof c === 'object' && c && 'text' in c ? (c as { text: string }).text : '') ||
+      (typeof c === 'string' ? c : '') ||
+      String(d?.completion ?? d?.text ?? '')
+    ).trim()
     return
   }
 
@@ -316,7 +345,6 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
   let chunkCount = 0
 
   while (true) {
-    const chunkStart = performance.now()
     const { done, value } = await reader.read()
     if (done) {
       log(`stream done — ${chunkCount} chunks received`)
@@ -324,9 +352,8 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
     }
     chunkCount++
     const raw = decoder.decode(value, { stream: true })
-    const waitMs = (performance.now() - chunkStart).toFixed(0)
-    if (chunkCount <= 5) {
-      log(`chunk #${chunkCount} arrived (waited ${waitMs}ms, ${raw.length} bytes): ${JSON.stringify(raw.slice(0, 300))}`)
+    if (chunkCount <= 3) {
+      log(`chunk #${chunkCount} arrived (${raw.length} bytes)`)
     }
     buffer += raw
 
@@ -491,8 +518,14 @@ async function showInFolder(relPath: string, e: Event) {
 
     <!-- Unified Commit Area -->
     <div class="border-t border-[--border-color] bg-[--bg-secondary] flex-shrink-0">
-      <!-- AI section: only when models are configured -->
-      <template v-if="!aiLoading && allModels.length > 0">
+      <div
+        v-if="aiLoading"
+        class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary] text-[10px] text-[--text-secondary]"
+      >
+        <Loader2 :size="12" class="animate-spin text-[--accent] flex-shrink-0" />
+        <span>正在加载 AI 设置与暂存差异…</span>
+      </div>
+      <template v-else-if="allModels.length > 0">
         <!-- Model selector + Generate button -->
         <div class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary]">
           <Sparkles :size="14" class="text-[--accent] flex-shrink-0" />
@@ -539,6 +572,21 @@ async function showInFolder(relPath: string, e: Event) {
           请先在文件列表中暂存文件后再使用 AI 生成提交信息
         </div>
       </template>
+      <div
+        v-else
+        class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary] text-xs text-[--text-secondary]"
+      >
+        <Sparkles :size="14" class="text-[--accent] flex-shrink-0 opacity-60" />
+        <span class="flex-1 min-w-0 leading-relaxed">未配置模型与供应商时无法使用 AI 生成提交说明，请在设置中添加。</span>
+        <button
+          type="button"
+          class="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-[--accent] text-white hover:bg-[--accent-hover] cursor-pointer"
+          @click="emit('openSettings')"
+        >
+          <Settings :size="12" />
+          打开设置
+        </button>
+      </div>
 
       <!-- Commit message input + button -->
       <div class="p-2.5">
