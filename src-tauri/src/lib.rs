@@ -34,6 +34,14 @@ pub struct CommitLog {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+    pub branch: String,
+}
+
 pub struct AppState {
     repo_path: Mutex<Option<String>>,
 }
@@ -300,6 +308,38 @@ fn load_last_repo(app: &tauri::AppHandle) -> Option<String> {
             None
         }
     })
+}
+
+fn pinned_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("failed to create app data dir: {e}"))?;
+    Ok(dir.join("pinned_branches.json"))
+}
+
+fn load_pinned_branches(app: &tauri::AppHandle) -> Vec<String> {
+    pinned_file_path(app)
+        .ok()
+        .and_then(|path| {
+            if path.exists() {
+                fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+            } else {
+                Some(Vec::new())
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn save_pinned_branches(app: &tauri::AppHandle, branches: &[String]) -> Result<(), String> {
+    let path = pinned_file_path(app)?;
+    let json =
+        serde_json::to_string(branches).map_err(|e| format!("serialization error: {e}"))?;
+    fs::write(&path, &json).map_err(|e| format!("write error: {e}"))?;
+    Ok(())
 }
 
 
@@ -697,6 +737,114 @@ async fn git_pull(state: State<'_, AppState>) -> Result<String, String> {
     result.map(|s| if s.is_empty() { "ok".into() } else { s })
 }
 
+// === Pin branches ===
+
+#[tauri::command]
+fn pin_branch(app: tauri::AppHandle, branch: String) -> Result<(), String> {
+    let mut branches = load_pinned_branches(&app);
+    if !branches.contains(&branch) {
+        branches.push(branch);
+        save_pinned_branches(&app, &branches)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn unpin_branch(app: tauri::AppHandle, branch: String) -> Result<(), String> {
+    let mut branches = load_pinned_branches(&app);
+    branches.retain(|b| b != &branch);
+    save_pinned_branches(&app, &branches)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_pinned_branches(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    Ok(load_pinned_branches(&app))
+}
+
+// === Tags ===
+
+#[tauri::command]
+fn create_tag(state: State<'_, AppState>, name: String, message: Option<String>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let mut args = vec!["tag"];
+    if let Some(msg) = &message {
+        if !msg.trim().is_empty() {
+            args.push("-a");
+            args.push(&name);
+            args.push("-m");
+            args.push(msg);
+        } else {
+            args.push(&name);
+        }
+    } else {
+        args.push(&name);
+    }
+    run_git(&repo, &args)
+}
+
+// === Stash ===
+
+#[tauri::command]
+fn stash_save(state: State<'_, AppState>, message: Option<String>, include_untracked: bool) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let mut args = vec!["stash", "push"];
+    if include_untracked {
+        args.push("--include-untracked");
+    }
+    if let Some(msg) = &message {
+        if !msg.trim().is_empty() {
+            args.push("-m");
+            args.push(msg);
+        }
+    }
+    run_git(&repo, &args)
+}
+
+#[tauri::command]
+fn stash_list(state: State<'_, AppState>) -> Result<Vec<StashEntry>, String> {
+    let repo = require_repo(&state)?;
+    let raw = run_git(&repo, &["stash", "list"])?;
+    let mut entries = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        // stash@{0}: On branch-name: message
+        let index = entries.len();
+        let rest = trimmed.split_once(": ").map(|(_, r)| r).unwrap_or(trimmed);
+        let branch = rest.split_once(": ").map(|(_, _r)| {
+            // Try to extract branch name from "On branch-name: message"
+            let branch_part = rest.strip_prefix("On ").and_then(|s| s.split_once(": ")).map(|(b, _)| b.to_string());
+            let msg = rest.split_once(": ").map(|(_, m)| m.to_string()).unwrap_or_default();
+            (branch_part.unwrap_or_default(), msg)
+        }).unwrap_or((String::new(), rest.to_string()));
+        entries.push(StashEntry {
+            index,
+            message: branch.1,
+            branch: branch.0,
+        });
+    }
+    Ok(entries)
+}
+
+#[tauri::command]
+fn stash_apply(state: State<'_, AppState>, index: usize) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["stash", "apply", &format!("stash@{{{index}}}")])
+}
+
+#[tauri::command]
+fn stash_file(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["stash", "push", "--", &path])
+}
+
+#[tauri::command]
+fn stash_drop(state: State<'_, AppState>, index: usize) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["stash", "drop", &format!("stash@{{{index}}}")])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -730,6 +878,15 @@ pub fn run() {
             get_ahead_behind,
             git_push,
             git_pull,
+            pin_branch,
+            unpin_branch,
+            get_pinned_branches,
+            create_tag,
+            stash_save,
+            stash_list,
+            stash_apply,
+            stash_drop,
+            stash_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

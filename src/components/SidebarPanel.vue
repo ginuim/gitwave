@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import {
-  FolderOpen, GitBranch, Globe,
-  List, History, Loader2, ChevronRight, ChevronDown, Plus,
+  FolderOpen, GitBranch, Globe, Pin, PinOff,
+  List, History, Loader2, ChevronRight, ChevronDown, Plus, Tag,
   ChevronDown as ChevronDownIcon,
-  RefreshCw, ArrowDownToLine, ArrowUpToLine,
+  RefreshCw, ArrowDownToLine, ArrowUpToLine, Archive,
 } from 'lucide-vue-next'
 import type { BranchInfo, AheadBehind } from '../types'
 
@@ -16,6 +16,8 @@ const props = defineProps<{
   branches: BranchInfo[]
   branchesLoading: boolean
   recentRepos: string[]
+  pinnedBranches: string[]
+  stashEntries: { index: number; message: string; branch: string }[]
   aheadBehind: AheadBehind
   fetchLoading: boolean
 }>()
@@ -30,6 +32,13 @@ const emit = defineEmits<{
   deleteBranch: [name: string]
   mergeBranch: [name: string]
   createBranch: [name: string]
+  pinBranch: [branch: string]
+  unpinBranch: [branch: string]
+  createTag: [name: string, message?: string]
+  stashSave: [message: string | null, includeUntracked: boolean]
+  stashList: []
+  stashApply: [index: number]
+  stashDrop: [index: number]
   fetch: []
   push: []
   pull: []
@@ -74,6 +83,82 @@ function closeCtxMenu() {
 function dirName(path: string): string {
   const parts = path.replace(/\\/g, '/').split('/')
   return parts[parts.length - 1] || path
+}
+
+// --- Tag dialog ---
+const tagDialog = ref<{ branch: string; name: string; message: string } | null>(null)
+const tagNameInput = ref<HTMLInputElement | null>(null)
+
+function submitTag() {
+  const d = tagDialog.value
+  if (!d || !d.name.trim()) return
+  emit('createTag', d.name.trim(), d.message.trim() || undefined)
+  tagDialog.value = null
+}
+
+function cancelTag() {
+  tagDialog.value = null
+}
+
+// --- Stash dialog ---
+const stashDialog = ref(false)
+const stashMessage = ref('')
+const stashIncludeUntracked = ref(false)
+const stashInput = ref<HTMLInputElement | null>(null)
+
+function openStash() {
+  stashDialog.value = true
+  stashMessage.value = ''
+  stashIncludeUntracked.value = false
+  setTimeout(() => stashInput.value?.focus(), 50)
+}
+
+function submitStash() {
+  emit('stashSave', stashMessage.value.trim() || null, stashIncludeUntracked.value)
+  stashDialog.value = false
+  stashMessage.value = ''
+  stashIncludeUntracked.value = false
+}
+
+function cancelStash() {
+  stashDialog.value = false
+  stashMessage.value = ''
+  stashIncludeUntracked.value = false
+}
+
+// --- Stash list ---
+const stashListOpen = ref(false)
+const localStashEntries = ref<{ index: number; message: string; branch: string }[]>([])
+const stashListLoading = ref(false)
+
+async function openStashList() {
+  stashListOpen.value = true
+  stashListLoading.value = true
+  emit('stashList')
+}
+
+function closeStashList() {
+  stashListOpen.value = false
+}
+
+// Watch stashEntries prop to stop loading
+watch(() => props.stashEntries, (val) => {
+  if (stashListOpen.value) {
+    stashListLoading.value = false
+  }
+})
+
+function restoreStash(index: number) {
+  if (confirm(`确认恢复 stash@{${index}}？`)) {
+    emit('stashApply', index)
+    closeStashList()
+  }
+}
+
+function dropStash(index: number) {
+  if (confirm(`确认删除 stash@{${index}}？`)) {
+    emit('stashDrop', index)
+  }
 }
 
 // --- Create branch dialog ---
@@ -142,6 +227,25 @@ function ctxMerge() {
   if (confirm(`确认将「${b}」合并到当前分支？`)) {
     emit('mergeBranch', b)
   }
+}
+
+function ctxTogglePin() {
+  const b = ctxMenu.value?.branch
+  closeCtxMenu()
+  if (!b) return
+  if (pinnedSet.value.has(b)) {
+    emit('unpinBranch', b)
+  } else {
+    emit('pinBranch', b)
+  }
+}
+
+function ctxCreateTag() {
+  const b = ctxMenu.value?.branch
+  closeCtxMenu()
+  if (!b) return
+  tagDialog.value = { branch: b, name: '', message: '' }
+  setTimeout(() => tagNameInput.value?.focus(), 50)
 }
 
 // Close context menu on outside click
@@ -237,8 +341,16 @@ function hasLeafDescendant(obj: Record<string, any>): boolean {
   return false
 }
 
-const localBranches = computed(() => buildTree(props.branches.filter(b => !b.isRemote)))
-const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isRemote)))
+const pinnedLocalBranches = computed(() =>
+  buildTree(props.branches.filter(b => !b.isRemote && props.pinnedBranches.includes(b.name)))
+)
+const regularLocalBranches = computed(() =>
+  buildTree(props.branches.filter(b => !b.isRemote && !props.pinnedBranches.includes(b.name)))
+)
+const remoteBranches = computed(() =>
+  buildTree(props.branches.filter(b => b.isRemote))
+)
+const pinnedSet = computed(() => new Set(props.pinnedBranches))
 </script>
 
 <template>
@@ -375,6 +487,21 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         <GitBranch :size="12" />
         <span>分支</span>
       </button>
+      <div class="flex-1" />
+      <button
+        class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors cursor-pointer"
+        title="Stash 当前工作区"
+        @click.stop="openStash"
+      >
+        <Archive :size="12" />
+      </button>
+      <button
+        class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors cursor-pointer"
+        title="查看 Stash 列表"
+        @click.stop="openStashList"
+      >
+        <List :size="12" />
+      </button>
     </div>
 
     <!-- Branch tree -->
@@ -386,11 +513,15 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
       </div>
 
       <template v-else-if="branches.length > 0">
-        <!-- Local branches tree -->
+        <!-- Pinned branches -->
+        <div v-if="pinnedLocalBranches.length > 0" class="flex items-center gap-1.5 mt-1 mb-0.5 pl-2 text-[10px] text-[--text-secondary] uppercase tracking-wide">
+          <Pin :size="10" class="text-yellow-400" />
+          <span>已固定</span>
+        </div>
         <div
-          v-for="node in localBranches"
-          :key="node.key"
-          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2"
+          v-for="node in pinnedLocalBranches"
+          :key="'p-'+node.key"
+          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
           :class="node.isLeaf
             ? (node.isCurrent
               ? 'text-[--accent] font-medium cursor-default'
@@ -420,10 +551,64 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
           <GitBranch v-if="node.isLeaf" :size="12" class="flex-shrink-0" />
 
           <span class="truncate">{{ node.label }}</span>
-          <!-- <span
-            v-if="node.isHead"
-            class="flex-shrink-0 ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[--accent] text-white leading-none"
-          >HEAD</span> -->
+          <button
+            v-if="node.isLeaf"
+            class="flex-shrink-0 ml-auto p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer transition-colors text-yellow-400"
+            title="取消固定"
+            @click.stop="emit('unpinBranch', node.label)"
+          >
+            <Pin :size="11" />
+          </button>
+        </div>
+
+        <!-- Local branches tree -->
+        <div
+          v-if="pinnedLocalBranches.length > 0 && regularLocalBranches.length > 0"
+          class="h-px bg-[--border-color] mx-2 my-1"
+        />
+        <div
+          v-for="node in regularLocalBranches"
+          :key="node.key"
+          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
+          :class="node.isLeaf
+            ? (node.isCurrent
+              ? 'text-[--accent] font-medium cursor-default'
+              : 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]')
+            : 'text-[--text-secondary] hover:text-[--text-primary]'"
+          :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
+          @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', node.label)"
+          @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, node.label, node.isCurrent)"
+        >
+          <button
+            v-if="!node.isLeaf"
+            class="flex-shrink-0 p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer"
+            @click.stop="toggleGroup(node.key)"
+          >
+            <ChevronRight
+              v-if="!expandedGroups.has(node.key)"
+              :size="12"
+              class="text-[--text-secondary]"
+            />
+            <ChevronDown
+              v-else
+              :size="12"
+              class="text-[--text-secondary]"
+            />
+          </button>
+
+          <GitBranch v-if="node.isLeaf" :size="12" class="flex-shrink-0" />
+
+          <span class="truncate">{{ node.label }}</span>
+          <button
+            v-if="node.isLeaf"
+            class="flex-shrink-0 ml-auto p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer transition-colors"
+            :class="pinnedSet.has(node.label) ? 'text-yellow-400' : 'text-[--text-secondary] opacity-0 group-hover:opacity-60'"
+            :title="pinnedSet.has(node.label) ? '取消固定' : '固定分支'"
+            @click.stop="pinnedSet.has(node.label) ? emit('unpinBranch', node.label) : emit('pinBranch', node.label)"
+          >
+            <Pin v-if="pinnedSet.has(node.label)" :size="11" />
+            <Pin v-else :size="11" />
+          </button>
         </div>
 
         <!-- Remote branches -->
@@ -437,7 +622,7 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
         <div
           v-for="node in remoteBranches"
           :key="node.key"
-          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2"
+          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
           :class="node.isLeaf
             ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
@@ -488,6 +673,14 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
           class="w-full text-left px-2.5 py-2.5 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
           @click="ctxRename"
         >重命名</button>
+        <button
+          class="w-full text-left px-2.5 py-2.5 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="ctxTogglePin"
+        >{{ ctxMenu && pinnedSet.has(ctxMenu.branch) ? '取消固定' : '固定分支' }}</button>
+        <button
+          class="w-full text-left px-2.5 py-2.5 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="ctxCreateTag"
+        >创建标签</button>
         <template v-if="!ctxMenu.isCurrent">
           <div class="h-px bg-[--border-color] my-2" />
           <button
@@ -566,6 +759,143 @@ const remoteBranches = computed(() => buildTree(props.branches.filter(b => b.isR
               class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer"
               @click="submitRename"
             >确定</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Tag dialog -->
+    <Teleport to="body">
+      <div
+        v-if="tagDialog"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="cancelTag"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[280px]"
+          @click.stop
+        >
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">创建标签</div>
+          <div class="text-[10px] text-[--text-secondary] mb-2 font-mono-ui">{{ tagDialog.branch }}</div>
+          <input
+            ref="tagNameInput"
+            v-model="tagDialog.name"
+            placeholder="标签名称"
+            class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
+            @keydown.enter="submitTag"
+            @keydown.escape="cancelTag"
+          />
+          <div class="text-[10px] text-[--text-secondary] mt-2 mb-1">标签说明（可选）</div>
+          <input
+            v-model="tagDialog.message"
+            placeholder="可选的说明信息（将创建附注标签）"
+            class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
+            @keydown.enter="submitTag"
+            @keydown.escape="cancelTag"
+          />
+          <div class="flex justify-end gap-2 mt-2.5">
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
+              @click="cancelTag"
+            >取消</button>
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer"
+              @click="submitTag"
+            >创建</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Stash dialog -->
+    <Teleport to="body">
+      <div
+        v-if="stashDialog"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="cancelStash"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[280px]"
+          @click.stop
+        >
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">Stash 当前工作区</div>
+          <input
+            ref="stashInput"
+            v-model="stashMessage"
+            placeholder="Stash 说明（可选）"
+            class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
+            @keydown.enter="submitStash"
+            @keydown.escape="cancelStash"
+          />
+          <label
+            class="flex items-center gap-2 mt-2.5 cursor-pointer text-[11px] text-[--text-secondary] hover:text-[--text-primary] transition-colors"
+          >
+            <input
+              v-model="stashIncludeUntracked"
+              type="checkbox"
+              class="rounded border-[--border-color] bg-[--bg-secondary] text-[--accent] focus:ring-[--accent] focus:ring-1"
+            />
+            <span>同时 Stash 未跟踪的新文件</span>
+          </label>
+          <div class="flex justify-end gap-2 mt-2.5">
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
+              @click="cancelStash"
+            >取消</button>
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer"
+              @click="submitStash"
+            >Stash</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Stash list dialog -->
+    <Teleport to="body">
+      <div
+        v-if="stashListOpen"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="closeStashList"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[320px] max-h-[60vh] flex flex-col"
+          @click.stop
+        >
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">Stash 列表</div>
+          <div v-if="stashListLoading" class="flex items-center justify-center py-8 text-[--text-secondary]">
+            <Loader2 :size="16" class="animate-spin mr-2" />
+            <span class="text-xs">加载中...</span>
+          </div>
+          <div v-else-if="props.stashEntries.length === 0" class="text-xs text-[--text-secondary] py-8 text-center">
+            没有 Stash 记录
+          </div>
+          <div v-else class="flex-1 overflow-y-auto space-y-1">
+            <div
+              v-for="entry in props.stashEntries"
+              :key="entry.index"
+              class="flex items-start gap-2 p-2 rounded hover:bg-[--bg-secondary] transition-colors"
+            >
+              <Archive :size="14" class="flex-shrink-0 mt-0.5 text-[--text-secondary]" />
+              <div class="flex-1 min-w-0">
+                <div class="text-xs text-[--text-primary] truncate">{{ entry.message || '(无说明)' }}</div>
+                <div class="text-[10px] text-[--text-secondary]">{{ entry.branch ? 'On ' + entry.branch : '' }}</div>
+              </div>
+              <button
+                class="flex-shrink-0 px-2 py-1 rounded text-[10px] bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer"
+                @click="restoreStash(entry.index)"
+              >恢复</button>
+              <button
+                class="flex-shrink-0 px-2 py-1 rounded text-[10px] text-[--text-secondary] hover:text-red-400 hover:bg-red-800/30 transition-colors cursor-pointer"
+                @click="dropStash(entry.index)"
+              >删除</button>
+            </div>
+          </div>
+          <div class="flex justify-end mt-2.5">
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
+              @click="closeStashList"
+            >关闭</button>
           </div>
         </div>
       </div>

@@ -30,6 +30,8 @@ const canStage = computed(() => !selectedCommitHash.value && !!selectedFile.valu
 const branches = ref<BranchInfo[]>([])
 const branchesLoading = ref(false)
 const recentRepos = ref<string[]>([])
+const pinnedBranches = ref<string[]>([])
+const stashEntries = ref<any[]>([])
 const historyFilter = ref<'current' | 'all'>('current')
 const currentBranch = computed(() => branches.value.find(b => b.isCurrent)?.name ?? '')
 
@@ -101,6 +103,7 @@ onMounted(async () => {
   }
   // Always load recent repos regardless of current session state
   await refreshRecentRepos()
+  await refreshPinnedBranches()
 
   window.addEventListener('focus', refreshWorkspaceIfVisible)
   document.addEventListener('visibilitychange', refreshWorkspaceIfVisible)
@@ -130,6 +133,14 @@ async function refreshBranches() {
 async function refreshRecentRepos() {
   try {
     recentRepos.value = await invoke<string[]>('get_recent_repos')
+  } catch (_) {
+    // ignore
+  }
+}
+
+async function refreshPinnedBranches() {
+  try {
+    pinnedBranches.value = await invoke<string[]>('get_pinned_branches')
   } catch (_) {
     // ignore
   }
@@ -383,6 +394,77 @@ async function gitFetch() {
     fetchLoading.value = false
   }
 }
+// === Pin branches ===
+
+async function pinBranch(branch: string) {
+  try {
+    await invoke('pin_branch', { branch })
+    await refreshPinnedBranches()
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+async function unpinBranch(branch: string) {
+  try {
+    await invoke('unpin_branch', { branch })
+    await refreshPinnedBranches()
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+// === Tag ===
+
+async function createTag(name: string, message?: string) {
+  try {
+    await invoke('create_tag', { name, message: message || null })
+    showToast('标签 ' + name + ' 已创建', 'success')
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+// === Stash ===
+
+async function stashSave(message: string | null, includeUntracked: boolean) {
+  try {
+    await invoke('stash_save', { message, includeUntracked })
+    showToast('已暂存', 'success')
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+async function stashList() {
+  try {
+    stashEntries.value = await invoke('stash_list')
+  } catch (e: any) {
+    showToast(String(e))
+    stashEntries.value = []
+  }
+}
+
+async function stashApply(index: number) {
+  try {
+    await invoke('stash_apply', { index })
+    showToast('已恢复 stash@{' + index + '}', 'success')
+    await syncRefresh()
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+async function stashDrop(index: number) {
+  try {
+    await invoke('stash_drop', { index })
+    showToast('已删除 stash@{' + index + '}', 'success')
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
+
 
 // History
 async function refreshHistory() {
@@ -449,6 +531,15 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @delete-branch="deleteBranch"
         @merge-branch="mergeBranch"
         @create-branch="createBranch"
+        :pinned-branches="pinnedBranches"
+        :stash-entries="stashEntries"
+        @pin-branch="pinBranch"
+        @unpin-branch="unpinBranch"
+        @create-tag="createTag"
+        @stash-save="stashSave"
+        @stash-list="stashList"
+        @stash-apply="stashApply"
+        @stash-drop="stashDrop"
         @fetch="gitFetch"
         @push="gitPush"
         @pull="gitPull"
