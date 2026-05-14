@@ -8,6 +8,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import DiffPanel from './components/DiffPanel.vue'
 import HistoryTab from './components/HistoryTab.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import { Loader2 } from 'lucide-vue-next'
 import type { FileStatus, CommitLog, BranchInfo, AheadBehind } from './types'
 
 // State
@@ -46,6 +47,9 @@ const pushLoading = ref(false)
 const pullLoading = ref(false)
 const aheadBehind = ref<AheadBehind>({ ahead: 0, behind: 0 })
 const fetchLoading = ref(false)
+
+// Global refresh indicator (syncs across panels)
+const globalRefreshing = computed(() => branchesLoading.value || historyLoading.value || statusLoading.value)
 
 // Toast
 const toast = ref<{ message: string; type: 'error' | 'success' } | null>(null)
@@ -578,6 +582,15 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
       />
     </Pane>
   </Splitpanes>
+
+    <!-- Global loading indicator -->
+    <div
+      v-if="globalRefreshing"
+      class="fixed top-2 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 px-2 py-1 rounded-full bg-[--bg-tertiary] border border-[--border-color] shadow-md"
+    >
+      <Loader2 :size="10" class="animate-spin text-[--accent]" />
+      <span class="text-[10px] text-[--text-secondary]">同步中...</span>
+    </div>
 
     <!-- Toast -->
     <Transition name="toast">

@@ -622,12 +622,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
     <!-- Branch tree -->
     <div class="flex-1 overflow-y-auto px-2.5 pb-2.5 pt-1">
 
-      <div v-if="branchesLoading" class="flex items-center gap-1.5 pl-2 py-1 text-xs text-[--text-secondary]">
-        <Loader2 :size="12" class="animate-spin" />
-        <span>加载中...</span>
-      </div>
-
-      <template v-else-if="branches.length > 0">
+      <template v-if="branches.length > 0">
         <!-- Pinned branches -->
         <div v-if="pinnedLocalBranches.length > 0" class="flex items-center gap-1.5 mt-1 mb-0.5 pl-2 text-[10px] text-[--text-secondary] uppercase tracking-wide">
           <Pin :size="10" class="text-yellow-400" />
