@@ -140,6 +140,17 @@ async function refreshRecentRepos() {
   }
 }
 
+async function cloneRepo(url: string, targetDir: string) {
+  try {
+    const path = await invoke<string>('clone_repository', { url, targetDir })
+    repoPath.value = path
+    showToast('仓库克隆成功', 'success')
+    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags()])
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
 async function refreshPinnedBranches() {
   try {
     pinnedBranches.value = await invoke<string[]>('get_pinned_branches')
@@ -569,6 +580,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @push="gitPush"
         @pull="gitPull"
         @settings-open="settingsOpen = true"
+        @clone-repo="cloneRepo"
       />
     </Pane>
 

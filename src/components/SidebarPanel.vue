@@ -45,6 +45,7 @@ const emit = defineEmits<{
   push: []
   pull: []
   settingsOpen: []
+  cloneRepo: [url: string, targetDir: string]
 }>()
 
 // --- Dropdown ---
@@ -136,6 +137,55 @@ function closeCtxMenu() {
 function dirName(path: string): string {
   const parts = path.replace(/\\/g, '/').split('/')
   return parts[parts.length - 1] || path
+}
+
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+
+// --- Clone dialog ---
+const cloneDialogOpen = ref(false)
+const cloneUrl = ref('')
+const cloneTargetDir = ref('')
+const cloneLoading = ref(false)
+const cloneError = ref<string | null>(null)
+
+function openCloneDialog() {
+  dropdownOpen.value = false
+  cloneDialogOpen.value = true
+  cloneUrl.value = ''
+  cloneTargetDir.value = ''
+  cloneError.value = null
+}
+
+function closeCloneDialog() {
+  cloneDialogOpen.value = false
+  cloneUrl.value = ''
+  cloneTargetDir.value = ''
+  cloneError.value = null
+}
+
+async function pickCloneDir() {
+  try {
+    const dir = await openDialog({ directory: true, multiple: false, title: '选择克隆目标目录' })
+    if (dir) cloneTargetDir.value = dir
+  } catch (_) { /* user cancelled */ }
+}
+
+function defaultCloneDir(): string {
+  const url = cloneUrl.value.trim()
+  if (!url) return ''
+  // Extract repo name from URL (last part before .git)
+  const name = url.split('/').pop()?.replace(/\.git$/, '') || ''
+  return name ? `~/gitwave/${name}` : ''
+}
+
+function submitClone() {
+  if (!cloneUrl.value.trim()) return
+  const url = cloneUrl.value.trim()
+  const dir = cloneTargetDir.value.trim() || defaultCloneDir()
+  if (!dir) return
+  cloneLoading.value = true
+  cloneError.value = null
+  emit('cloneRepo', url, dir)
 }
 
 const sidebarRemoteExpanded = ref(false)
@@ -480,7 +530,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
       <!-- Dropdown menu -->
       <div
         v-if="dropdownOpen"
-        class="absolute left-2.5 right-2.5 top-full -mt-[22px] bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-md z-50 flex flex-col text-xs max-h-72"
+        class="absolute left-2.5 right-2.5 top-full -mt-[22px] bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-md z-50 flex flex-col text-xs max-h-[338px]"
       >
         <!-- Search filter -->
         <div class="px-2.5 pt-2 pb-1.5">
@@ -567,6 +617,14 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
           >
             <FolderOpen :size="13" class="flex-shrink-0" />
             <span>打开其他仓库...</span>
+          </div>
+          <div class="h-px bg-[--border-color] mx-2.5" />
+          <div
+            class="flex items-center gap-2 px-2.5 py-2.5 cursor-pointer text-[--text-secondary] hover:bg-[--accent] hover:text-white transition-colors"
+            @click.stop="openCloneDialog"
+          >
+            <GitBranch :size="13" class="flex-shrink-0" />
+            <span>克隆仓库...</span>
           </div>
         </div>
       </div>
@@ -1140,6 +1198,69 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
               class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
               @click="closeStashList"
             >关闭</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Clone dialog -->
+    <Teleport to="body">
+      <div
+        v-if="cloneDialogOpen"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="closeCloneDialog"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[400px]"
+          @click.stop
+        >
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">克隆仓库</div>
+
+          <div class="space-y-2.5">
+            <div>
+              <label class="block text-[11px] text-[--text-secondary] mb-1">Git 仓库 URL</label>
+              <input
+                v-model="cloneUrl"
+                placeholder="https://github.com/user/repo.git"
+                class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
+                @keydown.enter="submitClone"
+              />
+            </div>
+            <div>
+              <label class="block text-[11px] text-[--text-secondary] mb-1">保存到目录</label>
+              <div class="flex gap-1.5">
+                <input
+                  v-model="cloneTargetDir"
+                  :placeholder="cloneUrl ? defaultCloneDir() : '/path/to/parent'"
+                  class="flex-1 min-w-0 px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
+                  @keydown.enter="submitClone"
+                />
+                <button
+                  class="flex-shrink-0 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--bg-tertiary] border border-[--border-color] text-[--text-secondary] hover:text-[--text-primary] hover:border-[--accent] transition-colors cursor-pointer"
+                  @click="pickCloneDir"
+                >浏览</button>
+              </div>
+              <div class="text-[10px] text-[--text-secondary] mt-1">未填写时自动生成自 URL</div>
+            </div>
+          </div>
+
+          <div v-if="cloneError" class="mt-2.5 p-2 rounded-[var(--radius)] bg-red-900/30 border border-red-800 text-[11px] text-red-300 break-words">
+            {{ cloneError }}
+          </div>
+
+          <div class="flex justify-end gap-2 mt-2.5">
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
+              @click="closeCloneDialog"
+            >取消</button>
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 cursor-pointer"
+              :disabled="!cloneUrl.trim() || cloneLoading"
+              @click="submitClone"
+            >
+              <Loader2 v-if="cloneLoading" :size="12" class="animate-spin mr-1 inline" />
+              <span>{{ cloneLoading ? '克隆中...' : '克隆' }}</span>
+            </button>
           </div>
         </div>
       </div>

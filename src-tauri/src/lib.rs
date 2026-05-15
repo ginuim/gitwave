@@ -503,6 +503,41 @@ fn get_recent_repos(app: tauri::AppHandle) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+async fn clone_repository(url: String, target_dir: String) -> Result<String, String> {
+    let target = PathBuf::from(&target_dir);
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("failed to create directory: {e}"))?;
+    }
+
+    // Run git clone
+    let result = tokio::task::spawn_blocking(move || {
+        let mut cmd = Command::new("git");
+        hide_git_child_console(&mut cmd);
+        cmd.arg("clone");
+        cmd.arg(&url);
+        cmd.arg(&target_dir);
+        set_git_utf8_env(&mut cmd);
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to spawn git clone: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("git clone failed: {stderr}"));
+        }
+
+        Ok(target_dir)
+    })
+    .await
+    .map_err(|e| format!("clone task failed: {e}"))?;
+
+    result
+}
+
+#[tauri::command]
 fn switch_repository(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let root = PathBuf::from(&path);
     if !is_git_dir(&root) {
@@ -1137,6 +1172,7 @@ pub fn run() {
             stash_drop,
             stash_file,
             get_staged_diff,
+            clone_repository,
             get_git_config,
             set_git_config,
             load_settings,
