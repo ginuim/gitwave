@@ -529,31 +529,33 @@ async function showInFolder(relPath: string, e: Event) {
         <!-- Model selector + Generate button -->
         <div class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary]">
           <Sparkles :size="14" class="text-[--accent] flex-shrink-0" />
-          <div class="flex-1 flex items-stretch gap-1.5">
+          <div class="flex-1 min-w-0 flex items-stretch gap-1.5">
             <!-- Single model: show as label; multiple: show as dropdown -->
-            <select
-              v-if="allModels.length > 1"
-              v-model="selectedModelId"
-              class="flex-1 min-w-0 px-2.5 py-1.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors cursor-pointer"
-              :disabled="generating"
-            >
+            <div v-if="allModels.length > 1" class="flex-1 min-w-0 flex" style="min-width: 0">
+              <select
+                v-model="selectedModelId"
+                class="h-9 w-full min-w-0 box-border rounded-[var(--radius)] border border-[--border-color] bg-[--bg-secondary] px-2.5 py-0 text-xs leading-9 text-[--text-primary] outline-none transition-colors focus:border-[--accent] cursor-pointer"
+                :disabled="generating"
+              >
               <option value="" disabled>选择模型</option>
               <option
                 v-for="m in allModels"
                 :key="m.id"
                 :value="m.id"
               >
-                {{ m.name }} ({{ m.provider.name }} / {{ m.provider.type === 'openai' ? 'OpenAI' : 'Anthropic' }})
+                {{ m.name.length > 20 ? m.name.slice(0, 20) + '…' : m.name }}
               </option>
             </select>
+            </div>
             <div
               v-else
-              class="flex-1 flex items-center px-2.5 py-1.5 text-xs text-[--text-primary] font-mono-ui truncate"
+              class="flex-1 min-w-0 flex items-center px-2.5 py-1.5 text-xs text-[--text-primary] font-mono-ui truncate"
+              :title="`${allModels[0].name} (${allModels[0].provider.name})`"
             >
-              {{ allModels[0].name }} ({{ allModels[0].provider.name }})
+              {{ allModels[0].name }}
             </div>
             <button
-              class="flex items-center gap-1 px-3 py-1.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
+              class="flex h-9 flex-shrink-0 items-center gap-1 rounded-[var(--radius)] bg-[--accent] px-3 text-xs text-white transition-colors hover:bg-[--accent-hover] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer whitespace-nowrap"
               :disabled="generating || aiLoading || !hasStagedFiles"
               @click="generateCommitMessage"
             >
