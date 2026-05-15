@@ -218,6 +218,14 @@ async function stageFile(path: string) {
   try {
     await invoke('stage_file', { path })
     await refreshStatus()
+    // 同步 diff 和 isStaged 状态
+    if (selectedFile.value === path) {
+      selectedFileIsStaged.value = statuses.value.some(s => s.path === path && s.isStaged)
+      diffText.value = await invoke<string>('get_file_diff', {
+        path,
+        isStaged: selectedFileIsStaged.value,
+      })
+    }
   } catch (e: any) {
     showToast(String(e))
   }
@@ -227,6 +235,14 @@ async function unstageFile(path: string) {
   try {
     await invoke('unstage_file', { path })
     await refreshStatus()
+    // 同步 diff 和 isStaged 状态
+    if (selectedFile.value === path) {
+      selectedFileIsStaged.value = statuses.value.some(s => s.path === path && s.isStaged)
+      diffText.value = await invoke<string>('get_file_diff', {
+        path,
+        isStaged: selectedFileIsStaged.value,
+      })
+    }
   } catch (e: any) {
     showToast(String(e))
   }
@@ -621,7 +637,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
       <DiffPanel
         :diff-text="diffText"
         :file-name="diffFileName"
-        :can-stage="!selectedCommitHash && !!selectedFile"
+        :can-stage="!selectedCommitHash && !!selectedFile && !selectedFileIsStaged"
         :file-path="canStage ? selectedFile : null"
         :repo-path="repoPath"
         :workspace-is-staged="selectedFileIsStaged"
