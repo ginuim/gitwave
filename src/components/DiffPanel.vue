@@ -14,6 +14,8 @@ const props = defineProps<{
   workspaceIsStaged: boolean
   /** 历史里查看某条提交时传入 commit hash，否则为 null */
   commitHash: string | null
+  /** 正在暂存 patch 中（stage_patch + refresh 未完成），此时禁用所有暂存按钮 */
+  patchStaging?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -22,7 +24,8 @@ const emit = defineEmits<{
 }>()
 
 interface DiffLine {
-  type: 'header' | 'added' | 'removed' | 'context'
+  /** `\ No newline at end of file`：不计入 @@ 行数，否则 `git apply` 会报 corrupt patch */
+  type: 'header' | 'added' | 'removed' | 'context' | 'noNewline'
   content: string
   /** Unique id for line-selection tracking */
   id: string
@@ -163,6 +166,7 @@ const sections = computed((): FileDiffSection[] => {
         if (line.startsWith('@@')) type = 'header'
         else if (line.startsWith('+')) type = 'added'
         else if (line.startsWith('-')) type = 'removed'
+        else if (line.startsWith('\\')) type = 'noNewline'
         else type = 'context'
 
         hunkLines.push({ type, content: line, id: nextLineId() })
@@ -175,7 +179,7 @@ const sections = computed((): FileDiffSection[] => {
       let oldLine = headerMatch ? parseInt(headerMatch[1]) : 1
       let newLine = headerMatch ? parseInt(headerMatch[2]) : 1
       for (const dl of hunkLines) {
-        if (dl.type === 'header') {
+        if (dl.type === 'header' || dl.type === 'noNewline') {
           lineNums.push({ old: null, new: null })
         } else if (dl.type === 'context') {
           lineNums.push({ old: oldLine, new: newLine })
@@ -330,19 +334,19 @@ function hunkPatch(section: FileDiffSection, hunk: HunkInfo): string {
 }
 
 /**
- * Build a filtered patch containing only selected lines within a hunk.
- * - Selected `+` lines → kept as added
- * - Selected `-` lines → kept as removed
- * - Non-selected `-` lines → converted to context (no-op for staging)
- * - Non-selected `+` lines → omitted entirely
+ * Build one filtered hunk containing only selected lines.
+ * - Selected `+` lines -> kept as added
+ * - Selected `-` lines -> kept as removed
+ * - Non-selected `-` lines -> converted to context (no-op for staging)
+ * - Non-selected `+` lines -> omitted entirely
  * - `@@` header line counts recalculated to match
  */
-function buildFilteredPatch(section: FileDiffSection, hunk: HunkInfo, selectedIds: Set<string>): string | null {
+function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>): string | null {
   const contentLines = hunk.lines.slice(1)  // skip the @@ header
 
   const headerText = hunk.lines[0].content
   const headerMatch = headerText.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
-  if (!headerMatch) return hunkPatch(section, hunk) // fallback
+  if (!headerMatch) return hunk.lines.map(l => l.content).join('\n') + '\n'
 
   const origStart = parseInt(headerMatch[1])
   const newStart = parseInt(headerMatch[3])
@@ -354,18 +358,29 @@ function buildFilteredPatch(section: FileDiffSection, hunk: HunkInfo, selectedId
   const keptLines: string[] = []
   let origCount = 0
   let newCount = 0
+  /** 未选中的 `+` 被省略时，紧随其后的 `\ No newline...` 也应省略，否则 patch 非法 */
+  let skipNextNoNewline = false
 
   for (const line of contentLines) {
+    if (line.type === 'noNewline') {
+      if (!skipNextNoNewline) keptLines.push(line.content)
+      skipNextNoNewline = false
+      continue
+    }
+
+    if (line.type === 'added' && !selectedIds.has(line.id)) {
+      skipNextNoNewline = true
+      continue
+    }
+    skipNextNoNewline = false
+
     if (line.type === 'context') {
       keptLines.push(line.content)
       origCount++
       newCount++
     } else if (line.type === 'added') {
-      if (selectedIds.has(line.id)) {
-        keptLines.push(line.content)
-        newCount++
-      }
-      // Not selected: omit entirely
+      keptLines.push(line.content)
+      newCount++
     } else if (line.type === 'removed') {
       if (selectedIds.has(line.id)) {
         keptLines.push(line.content)
@@ -386,8 +401,12 @@ function buildFilteredPatch(section: FileDiffSection, hunk: HunkInfo, selectedId
   // Recalculate @@ line counts from the actual patch content
   // (Some context lines don't add/remove; removed lines count only in orig; added lines count only in new)
   const newHeader = `@@ -${origStart},${origCount} +${newStart},${newCount} @@${headerSuffix ? ' ' + headerSuffix : ''}`
-  const body = [newHeader, ...keptLines].join('\n')
-  return `${section.diffPrefix}\n${body}\n`
+  return [newHeader, ...keptLines].join('\n') + '\n'
+}
+
+function buildFilteredPatch(section: FileDiffSection, hunk: HunkInfo, selectedIds: Set<string>): string | null {
+  const body = buildFilteredHunk(hunk, selectedIds)
+  return body ? `${section.diffPrefix}\n${body}` : null
 }
 
 /** Stage the entire file */
@@ -408,16 +427,24 @@ function stageSelectedLines() {
   const ids = selectedLineIds.value
   if (ids.size === 0) return
 
+  const patchParts: string[] = []
   for (const section of sections.value) {
+    const hunkBodies: string[] = []
     for (const hunk of section.hunks) {
       const hasSelected = hunk.lines.some(l => ids.has(l.id))
       if (!hasSelected) continue
 
-      const patch = buildFilteredPatch(section, hunk, ids)
-      if (patch) {
-        emit('stagePatch', patch)
-      }
+      const body = buildFilteredHunk(hunk, ids)
+      if (body) hunkBodies.push(body)
     }
+
+    if (hunkBodies.length > 0) {
+      patchParts.push(`${section.diffPrefix}\n${hunkBodies.join('')}`)
+    }
+  }
+
+  if (patchParts.length > 0) {
+    emit('stagePatch', patchParts.join(''))
   }
 
   selectedLineIds.value = new Set()
@@ -434,7 +461,7 @@ const selectableFlat = computed(() => {
       const hunk = section.hunks[hi]
       for (let li = 0; li < hunk.lines.length; li++) {
         const line = hunk.lines[li]
-        if (line.type !== 'header') out.push({ id: line.id, si, hi, li })
+        if (line.type !== 'header' && line.type !== 'noNewline') out.push({ id: line.id, si, hi, li })
       }
     }
   }
@@ -461,10 +488,11 @@ function getHunkBodySegments(hunk: HunkInfo): HunkBodySegment[] {
     if (t === 'added' || t === 'removed') {
       const start = li
       while (li < n && (L[li].type === 'added' || L[li].type === 'removed')) li++
+      while (li < n && L[li].type === 'noNewline') li++
       out.push({ kind: 'changes', startLi: start, endLi: li - 1 })
     } else {
       const start = li
-      while (li < n && L[li].type === 'context') li++
+      while (li < n && (L[li].type === 'context' || L[li].type === 'noNewline')) li++
       out.push({ kind: 'context', startLi: start, endLi: li - 1 })
     }
   }
@@ -593,7 +621,8 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
       <!-- Stage selected lines button -->
       <button
         v-if="canStage && selectedLineIds.size > 0"
-        class="ml-auto flex shrink-0 items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700 text-white hover:bg-green-600 transition-colors cursor-pointer"
+        :disabled="patchStaging"
+        class="ml-auto flex shrink-0 items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700 text-white hover:bg-green-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         @click="stageSelectedLines"
       >
         <FilePlus :size="12" />
@@ -696,7 +725,8 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
             <div class="ml-2 flex shrink-0 items-center gap-2">
               <button
                 v-if="canStage"
-                class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700/70 hover:bg-green-600 text-white transition-colors cursor-pointer"
+                :disabled="patchStaging"
+                class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700/70 hover:bg-green-600 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="暂存整个文件"
                 @click.stop="stageEntireFile(filePath || section.fileName)"
               >
@@ -725,7 +755,8 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                 <span class="min-w-0 flex-1 truncate text-[10px] font-mono-ui text-[--text-secondary]">{{ hunk.header }}</span>
                 <button
                   v-if="canStage"
-                  class="ml-2 flex shrink-0 items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
+                  :disabled="patchStaging"
+                  class="ml-2 flex shrink-0 items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors opacity-0 group-hover:opacity-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   title="暂存整个 @@ 块（含全部子区域）"
                   @click.stop="stageHunk(si, hi)"
                 >
@@ -752,8 +783,9 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                   >
                     <button
                       v-if="canStage && changeLineIdsInBlock(hunk, seg).size > 0"
+                      :disabled="patchStaging"
                       type="button"
-                      class="diff-stage-float absolute right-2.5 top-2.5 z-40 flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-green-700 text-white shadow-md opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity cursor-pointer"
+                      class="diff-stage-float absolute right-2.5 top-2.5 z-40 flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-green-700 text-white shadow-md opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       title="暂存本段连续 +/- 行"
                       @mousedown.stop
                       @click.stop="stageChangeBlock(si, hi, seg)"

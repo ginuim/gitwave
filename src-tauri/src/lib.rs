@@ -1,8 +1,9 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -112,6 +113,37 @@ fn run_git_bytes(repo: &str, args: &[&str]) -> Result<Vec<u8>, String> {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
     Ok(output.stdout)
+}
+
+fn run_git_with_stdin(repo: &str, args: &[&str], input: &[u8]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    hide_git_child_console(&mut cmd);
+    cmd.current_dir(repo);
+    cmd.args(args);
+    set_git_utf8_env(&mut cmd);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn git: {e}"))?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "failed to open git stdin".to_string())?;
+        stdin
+            .write_all(input)
+            .map_err(|e| format!("failed to write patch: {e}"))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to wait for git: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn ensure_safe_repo_relative_path(path: &str) -> Result<(), String> {
@@ -727,11 +759,7 @@ async fn git_fetch(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 fn stage_patch(state: State<'_, AppState>, patch: String) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    let tmp = std::env::temp_dir().join(format!("gitwave_patch_{}", std::process::id()));
-    std::fs::write(&tmp, &patch).map_err(|e| format!("failed to write patch: {e}"))?;
-    let result = run_git(&repo, &["apply", "--cached", tmp.to_str().unwrap()]);
-    let _ = std::fs::remove_file(&tmp);
-    result
+    run_git_with_stdin(&repo, &["apply", "--cached", "-"], patch.as_bytes())
 }
 
 #[tauri::command]

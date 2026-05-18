@@ -50,6 +50,7 @@ const pushLoading = ref(false)
 const pullLoading = ref(false)
 const aheadBehind = ref<AheadBehind>({ ahead: 0, behind: 0 })
 const fetchLoading = ref(false)
+const patchStaging = ref(false)
 
 // Global refresh indicator (syncs across panels)
 const globalRefreshing = computed(() => branchesLoading.value || historyLoading.value || statusLoading.value)
@@ -281,19 +282,23 @@ async function selectFile(path: string, isStaged: boolean) {
 
 // Stage a patch (hunk or selected lines)
 async function handleStagePatch(patch: string) {
+  if (patchStaging.value) return
+  const targetFile = selectedFile.value
+  patchStaging.value = true
   try {
     await invoke('stage_patch', { patch })
-    showToast('已暂存', 'success')
     await refreshStatus()
-    // Re-fetch diff to reflect staged state
-    if (selectedFile.value) {
+    if (targetFile && selectedFile.value === targetFile) {
       diffText.value = await invoke<string>('get_file_diff', {
-        path: selectedFile.value,
+        path: targetFile,
         isStaged: false,
       })
     }
+    showToast('已暂存', 'success')
   } catch (e: any) {
     showToast(String(e))
+  } finally {
+    patchStaging.value = false
   }
 }
 
@@ -642,6 +647,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :repo-path="repoPath"
         :workspace-is-staged="selectedFileIsStaged"
         :commit-hash="selectedCommitHash"
+        :patch-staging="patchStaging"
         @stage-patch="handleStagePatch"
         @stage-file="stageFile"
       />
