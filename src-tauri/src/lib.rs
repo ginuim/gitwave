@@ -1124,10 +1124,66 @@ fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
     Ok(AheadBehind { ahead, behind })
 }
 
+fn has_upstream(repo: &str) -> bool {
+    run_git(
+        repo,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .is_ok()
+}
+
+/// 与 `git push` 失败提示一致：无 upstream 时用 `push --set-upstream <remote> <branch>`。
+fn resolve_push_remote(repo: &str, branch: &str) -> Result<String, String> {
+    for key in [
+        format!("branch.{branch}.pushRemote"),
+        format!("branch.{branch}.remote"),
+        "remote.pushDefault".to_string(),
+    ] {
+        if let Ok(remote) = run_git(repo, &["config", "--get", &key]) {
+            let remote = remote.trim();
+            if !remote.is_empty() {
+                return Ok(remote.to_string());
+            }
+        }
+    }
+    if run_git(repo, &["remote", "get-url", "origin"]).is_ok() {
+        return Ok("origin".into());
+    }
+    let remotes = run_git(repo, &["remote"])?;
+    remotes
+        .lines()
+        .map(str::trim)
+        .find(|r| !r.is_empty())
+        .map(|r| r.to_string())
+        .ok_or_else(|| "未配置 git remote，无法 push".into())
+}
+
+fn git_push_repo(repo: &str) -> Result<String, String> {
+    if has_upstream(repo) {
+        return run_git(repo, &["push"]);
+    }
+    let branch = run_git(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
+    if branch == "HEAD" {
+        return Err("当前为 detached HEAD，无法 push".into());
+    }
+    let remote = resolve_push_remote(repo, &branch)?;
+    run_git(
+        repo,
+        &["push", "--set-upstream", &remote, &branch],
+    )
+}
+
 #[tauri::command]
 async fn git_push(state: State<'_, AppState>) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    let result = tokio::task::spawn_blocking(move || run_git(&repo, &["push"]))
+    let result = tokio::task::spawn_blocking(move || git_push_repo(&repo))
         .await
         .map_err(|e| format!("task failed: {e}"))?;
     result.map(|s| if s.is_empty() { "ok".into() } else { s })
