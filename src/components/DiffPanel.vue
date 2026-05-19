@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { ChevronDown, ChevronRight, FileCode, FilePlus, User, CalendarDays } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight, FileCode, FilePlus, Undo2, User, CalendarDays } from 'lucide-vue-next'
 
 const props = defineProps<{
   diffText: string
   fileName: string | null
   canStage: boolean
+  canRevert: boolean
   filePath: string | null
   /** 仓库根路径，用于加载二进制图片预览 */
   repoPath: string | null
@@ -14,13 +15,16 @@ const props = defineProps<{
   workspaceIsStaged: boolean
   /** 历史里查看某条提交时传入 commit hash，否则为 null */
   commitHash: string | null
-  /** 正在 Stage patch 中（stage_patch + refresh 未完成），此时禁用所有 Stage 按钮 */
+  /** patch 操作中（stage/revert + refresh 未完成），此时禁用所有 Stage/Revert 按钮 */
   patchStaging?: boolean
 }>()
 
 const emit = defineEmits<{
   stageFile: [path: string]
   stagePatch: [patch: string]
+  revertFile: [path: string, isStaged: boolean]
+  /** 第二个参数与当前展示的 diff 一致（Staged / Unstaged） */
+  revertPatch: [patch: string, isStaged: boolean]
 }>()
 
 interface DiffLine {
@@ -36,6 +40,8 @@ interface HunkInfo {
   lines: DiffLine[]
   /** Per-line file line numbers parsed from @@ header; null means "no number" (e.g. header row) */
   lineNums: { old: number | null; new: number | null }[]
+  /** 原始 hunk 文本（与 git diff 输出一致，供 apply/revert 使用） */
+  rawText: string
 }
 
 interface FileDiffSection {
@@ -137,12 +143,13 @@ const sections = computed((): FileDiffSection[] => {
     const match = firstLine.match(/diff --git a\/(.+) b\/(.+)/)
     fileName = match ? (match[2] || match[1]) : (props.fileName || '')
 
-    // Build the diff prefix (without index line for apply compatibility)
     const diffGitLine = allLines[0]
-    // Find --- a/ and +++ b/ lines
-    const minusLine = allLines.find(l => l.startsWith('--- ')) ?? `--- a/${fileName}`
-    const plusLine = allLines.find(l => l.startsWith('+++ ')) ?? `+++ b/${fileName}`
-    const diffPrefix = `${diffGitLine}\n${minusLine}\n${plusLine}`
+    const minusIdx = allLines.findIndex(l => l.startsWith('--- '))
+    const plusIdx = allLines.findIndex(l => l.startsWith('+++ '))
+    const metaLines = minusIdx > 1 ? allLines.slice(1, minusIdx) : []
+    const minusLine = minusIdx >= 0 ? allLines[minusIdx] : `--- a/${fileName}`
+    const plusLine = plusIdx >= 0 ? allLines[plusIdx] : `+++ b/${fileName}`
+    const diffPrefix = [diffGitLine, ...metaLines, minusLine, plusLine].join('\n')
 
     // Find all @@ lines
     const hunkStartIndices: number[] = []
@@ -193,10 +200,12 @@ const sections = computed((): FileDiffSection[] => {
         }
       }
 
+      const rawText = allLines.slice(start, end).join('\n') + '\n'
       hunks.push({
         header: allLines[start],
         lines: hunkLines,
         lineNums,
+        rawText,
       })
     }
 
@@ -327,10 +336,9 @@ watch(
 
 // ── Stage helpers ──
 
-/** Build a full patch string for one hunk */
+/** Build a full patch string for one hunk（使用 git 原始 hunk 文本） */
 function hunkPatch(section: FileDiffSection, hunk: HunkInfo): string {
-  const body = hunk.lines.map(l => l.content).join('\n')
-  return `${section.diffPrefix}\n${body}\n`
+  return `${section.diffPrefix}\n${hunk.rawText}`
 }
 
 /**
@@ -341,7 +349,18 @@ function hunkPatch(section: FileDiffSection, hunk: HunkInfo): string {
  * - Non-selected `+` lines -> omitted entirely
  * - `@@` header line counts recalculated to match
  */
-function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>): string | null {
+/**
+ * 构造只包含 selectedIds 所选行的单个 hunk patch 文本。
+ *
+ * forRevert=false（staging，正向 apply --cached）：
+ *   - 未选中 `+` → 省略（不 stage）
+ *   - 未选中 `-` → 转为 context（行存在于 index，不动它）
+ *
+ * forRevert=true（revert，反向 apply -R 作用于工作区）：
+ *   - 未选中 `+` → 转为 context（行存在于工作区，不动它）
+ *   - 未选中 `-` → 省略（行不存在于工作区，若转成 context 则 git apply -R 找不到它）
+ */
+function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>, forRevert = false): string | null {
   const contentLines = hunk.lines.slice(1)  // skip the @@ header
 
   const headerText = hunk.lines[0].content
@@ -358,7 +377,6 @@ function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>): string | n
   const keptLines: string[] = []
   let origCount = 0
   let newCount = 0
-  /** 未选中的 `+` 被省略时，紧随其后的 `\ No newline...` 也应省略，否则 patch 非法 */
   let skipNextNoNewline = false
 
   for (const line of contentLines) {
@@ -369,7 +387,15 @@ function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>): string | n
     }
 
     if (line.type === 'added' && !selectedIds.has(line.id)) {
-      skipNextNoNewline = true
+      if (forRevert) {
+        // 未选中 + 存在于工作区，保留为 context，不被 revert
+        keptLines.push(' ' + line.content.slice(1))
+        origCount++
+        newCount++
+        skipNextNoNewline = false
+      } else {
+        skipNextNoNewline = true
+      }
       continue
     }
     skipNextNoNewline = false
@@ -385,8 +411,11 @@ function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>): string | n
       if (selectedIds.has(line.id)) {
         keptLines.push(line.content)
         origCount++
+      } else if (forRevert) {
+        // 未选中 - 不存在于工作区，省略（转成 context 会导致 git apply -R 找不到该行）
+        skipNextNoNewline = true
       } else {
-        // Convert to context (keep the line in the file)
+        // staging：未选中 - 存在于 index，转为 context 保留
         keptLines.push(' ' + line.content.slice(1))
         origCount++
         newCount++
@@ -394,18 +423,15 @@ function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>): string | n
     }
   }
 
-  // Check if there's actually anything to stage
   const hasWork = contentLines.some(l => (l.type === 'added' || l.type === 'removed') && selectedIds.has(l.id))
   if (!hasWork) return null
 
-  // Recalculate @@ line counts from the actual patch content
-  // (Some context lines don't add/remove; removed lines count only in orig; added lines count only in new)
   const newHeader = `@@ -${origStart},${origCount} +${newStart},${newCount} @@${headerSuffix ? ' ' + headerSuffix : ''}`
   return [newHeader, ...keptLines].join('\n') + '\n'
 }
 
-function buildFilteredPatch(section: FileDiffSection, hunk: HunkInfo, selectedIds: Set<string>): string | null {
-  const body = buildFilteredHunk(hunk, selectedIds)
+function buildFilteredPatch(section: FileDiffSection, hunk: HunkInfo, selectedIds: Set<string>, forRevert = false): string | null {
+  const body = buildFilteredHunk(hunk, selectedIds, forRevert)
   return body ? `${section.diffPrefix}\n${body}` : null
 }
 
@@ -414,12 +440,23 @@ function stageEntireFile(path: string) {
   emit('stageFile', path)
 }
 
+function revertEntireFile(path: string) {
+  emit('revertFile', path, props.workspaceIsStaged)
+}
+
 /** Stage one hunk */
 function stageHunk(sectionIdx: number, hunkIdx: number) {
   const section = sections.value[sectionIdx]
   const hunk = section.hunks[hunkIdx]
   const patch = hunkPatch(section, hunk)
   emit('stagePatch', patch)
+}
+
+function revertHunk(sectionIdx: number, hunkIdx: number) {
+  const section = sections.value[sectionIdx]
+  const hunk = section.hunks[hunkIdx]
+  const patch = hunkPatch(section, hunk)
+  emit('revertPatch', patch, props.workspaceIsStaged)
 }
 
 /** Stage the hunks containing selected lines (only selected lines within each) */
@@ -445,6 +482,34 @@ function stageSelectedLines() {
 
   if (patchParts.length > 0) {
     emit('stagePatch', patchParts.join(''))
+  }
+
+  selectedLineIds.value = new Set()
+  anchorLineId.value = null
+}
+
+function revertSelectedLines() {
+  const ids = selectedLineIds.value
+  if (ids.size === 0) return
+
+  const patchParts: string[] = []
+  for (const section of sections.value) {
+    const hunkBodies: string[] = []
+    for (const hunk of section.hunks) {
+      const hasSelected = hunk.lines.some(l => ids.has(l.id))
+      if (!hasSelected) continue
+
+      const body = buildFilteredHunk(hunk, ids, true)
+      if (body) hunkBodies.push(body)
+    }
+
+    if (hunkBodies.length > 0) {
+      patchParts.push(`${section.diffPrefix}\n${hunkBodies.join('')}`)
+    }
+  }
+
+  if (patchParts.length > 0) {
+    emit('revertPatch', patchParts.join(''), props.workspaceIsStaged)
   }
 
   selectedLineIds.value = new Set()
@@ -540,6 +605,15 @@ function stageChangeBlock(sectionIdx: number, hunkIdx: number, blk: { startLi: n
   if (patch) emit('stagePatch', patch)
 }
 
+function revertChangeBlock(sectionIdx: number, hunkIdx: number, blk: { startLi: number; endLi: number }) {
+  const section = sections.value[sectionIdx]
+  const hunk = section.hunks[hunkIdx]
+  const ids = changeLineIdsInBlock(hunk, blk)
+  if (ids.size === 0) return
+  const patch = buildFilteredPatch(section, hunk, ids, true)
+  if (patch) emit('revertPatch', patch, props.workspaceIsStaged)
+}
+
 function onGutterMouseDown(e: MouseEvent, lineId: string) {
   e.stopPropagation()
   const next = new Set<string>()
@@ -580,7 +654,7 @@ function clearLineSelection() {
 function onDiffSurfacePointerDown(e: MouseEvent) {
   const t = e.target as HTMLElement | null
   if (!t) return
-  if (t.closest('.diff-select-zone') || t.closest('.diff-stage-float')) return
+  if (t.closest('.diff-select-zone') || t.closest('.diff-stage-float') || t.closest('.diff-revert-float')) return
   clearLineSelection()
 }
 
@@ -618,16 +692,29 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
       <span v-if="fileName" class="text-[--text-primary] font-medium truncate font-mono-ui min-w-0 flex-1">{{ fileName }}</span>
       <span v-else class="text-[--text-secondary] shrink-0">选择文件查看差异</span>
       <span v-if="sections.length > 1" class="text-[10px] text-[--text-secondary] font-mono-ui shrink-0">{{ sections.length }} 个文件</span>
-      <!-- Stage selected lines button -->
-      <button
-        v-if="canStage && selectedLineIds.size > 0"
-        :disabled="patchStaging"
-        class="ml-auto flex shrink-0 items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700 text-white hover:bg-green-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-        @click="stageSelectedLines"
+      <div
+        v-if="(canRevert || canStage) && selectedLineIds.size > 0"
+        class="ml-auto flex shrink-0 items-center gap-1.5"
       >
-        <FilePlus :size="12" />
-        Stage 选中 ({{ selectedLineIds.size }})
-      </button>
+        <button
+          v-if="canRevert"
+          :disabled="patchStaging"
+          class="flex items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-700 text-white hover:bg-orange-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          @click="revertSelectedLines"
+        >
+          <Undo2 :size="12" />
+          Revert 选中 ({{ selectedLineIds.size }})
+        </button>
+        <button
+          v-if="canStage"
+          :disabled="patchStaging"
+          class="flex items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700 text-white hover:bg-green-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          @click="stageSelectedLines"
+        >
+          <FilePlus :size="12" />
+          Stage 选中 ({{ selectedLineIds.size }})
+        </button>
+      </div>
     </div>
 
     <!-- Diff content -->
@@ -724,6 +811,16 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
             <span class="min-w-0 flex-1 truncate text-xs text-[--text-primary] font-medium font-mono-ui">{{ section.fileName || '差异' }}</span>
             <div class="ml-2 flex shrink-0 items-center gap-2">
               <button
+                v-if="canRevert"
+                :disabled="patchStaging"
+                class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-700/70 hover:bg-orange-600 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="丢弃整个文件变更"
+                @click.stop="revertEntireFile(filePath || section.fileName)"
+              >
+                <Undo2 :size="12" />
+                Revert 文件
+              </button>
+              <button
                 v-if="canStage"
                 :disabled="patchStaging"
                 class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700/70 hover:bg-green-600 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
@@ -753,16 +850,28 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                 <ChevronDown v-if="!isHunkCollapsed(si, hi)" :size="12" class="flex-shrink-0 text-[--text-secondary]" />
                 <ChevronRight v-else :size="12" class="flex-shrink-0 text-[--text-secondary]" />
                 <span class="min-w-0 flex-1 truncate text-[10px] font-mono-ui text-[--text-secondary]">{{ hunk.header }}</span>
-                <button
-                  v-if="canStage"
-                  :disabled="patchStaging"
-                  class="ml-2 flex shrink-0 items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors opacity-0 group-hover:opacity-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                  title="Stage 整个 @@ 块（含全部子区域）"
-                  @click.stop="stageHunk(si, hi)"
-                >
-                  <FilePlus :size="12" />
-                  Stage 块
-                </button>
+                <div class="ml-2 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
+                  <button
+                    v-if="canRevert"
+                    :disabled="patchStaging"
+                    class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-800/50 hover:bg-orange-700 text-orange-200 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="丢弃整个 @@ 块变更"
+                    @click.stop="revertHunk(si, hi)"
+                  >
+                    <Undo2 :size="12" />
+                    Revert 块
+                  </button>
+                  <button
+                    v-if="canStage"
+                    :disabled="patchStaging"
+                    class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Stage 整个 @@ 块（含全部子区域）"
+                    @click.stop="stageHunk(si, hi)"
+                  >
+                    <FilePlus :size="12" />
+                    Stage 块
+                  </button>
+                </div>
               </div>
 
               <!-- Hunk lines: @@ header + sub-blocks + gutter selection -->
@@ -781,18 +890,35 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                     v-if="seg.kind === 'changes'"
                     class="relative group/diffblk rounded-sm"
                   >
-                    <button
-                      v-if="canStage && changeLineIdsInBlock(hunk, seg).size > 0"
-                      :disabled="patchStaging"
-                      type="button"
-                      class="diff-stage-float absolute right-2.5 top-2.5 z-40 flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-green-700 text-white shadow-md opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                      title="Stage 本段连续 +/- 行"
-                      @mousedown.stop
-                      @click.stop="stageChangeBlock(si, hi, seg)"
+                    <div
+                      v-if="(canRevert || canStage) && changeLineIdsInBlock(hunk, seg).size > 0"
+                      class="absolute right-2.5 top-2.5 z-40 flex items-center gap-1 opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity"
                     >
-                      <FilePlus :size="12" />
-                      Stage
-                    </button>
+                      <button
+                        v-if="canRevert"
+                        :disabled="patchStaging"
+                        type="button"
+                        class="diff-revert-float flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-orange-700 text-white shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="丢弃本段连续 +/- 行"
+                        @mousedown.stop
+                        @click.stop="revertChangeBlock(si, hi, seg)"
+                      >
+                        <Undo2 :size="12" />
+                        Revert
+                      </button>
+                      <button
+                        v-if="canStage"
+                        :disabled="patchStaging"
+                        type="button"
+                        class="diff-stage-float flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-green-700 text-white shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Stage 本段连续 +/- 行"
+                        @mousedown.stop
+                        @click.stop="stageChangeBlock(si, hi, seg)"
+                      >
+                        <FilePlus :size="12" />
+                        Stage
+                      </button>
+                    </div>
                     <div
                       v-for="li in liRange(seg.startLi, seg.endLi, hunk.lines.length - 1)"
                       :key="`${si}-${hi}-${li}-${hunk.lines[li]?.id ?? 'x'}`"

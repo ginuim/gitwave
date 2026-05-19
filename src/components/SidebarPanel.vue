@@ -139,7 +139,7 @@ function dirName(path: string): string {
   return parts[parts.length - 1] || path
 }
 
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { open as openDialog, confirm } from '@tauri-apps/plugin-dialog'
 
 // --- Clone dialog ---
 const cloneDialogOpen = ref(false)
@@ -265,15 +265,15 @@ watch(() => props.stashEntries, (val) => {
   }
 })
 
-function restoreStash(index: number) {
-  if (confirm(`确认恢复 stash@{${index}}？`)) {
+async function restoreStash(index: number) {
+  if (await confirm(`确认恢复 stash@{${index}}？`)) {
     emit('stashApply', index)
     closeStashList()
   }
 }
 
-function dropStash(index: number) {
-  if (confirm(`确认删除 stash@{${index}}？`)) {
+async function dropStash(index: number) {
+  if (await confirm(`确认删除 stash@{${index}}？`)) {
     emit('stashDrop', index)
   }
 }
@@ -328,20 +328,20 @@ function cancelRename() {
   renameDialog.value = null
 }
 
-function ctxDelete() {
+async function ctxDelete() {
   const b = ctxMenu.value?.branch
   closeCtxMenu()
   if (!b) return
-  if (confirm(`确认删除分支「${b}」？`)) {
+  if (await confirm(`确认删除分支「${b}」？`)) {
     emit('deleteBranch', b)
   }
 }
 
-function ctxMerge() {
+async function ctxMerge() {
   const b = ctxMenu.value?.branch
   closeCtxMenu()
   if (!b) return
-  if (confirm(`确认将「${b}」合并到当前分支？`)) {
+  if (await confirm(`确认将「${b}」合并到当前分支？`)) {
     emit('mergeBranch', b)
   }
 }

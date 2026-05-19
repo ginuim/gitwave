@@ -789,6 +789,251 @@ fn stage_patch(state: State<'_, AppState>, patch: String) -> Result<String, Stri
     run_git_with_stdin(&repo, &["apply", "--cached", "-"], patch.as_bytes())
 }
 
+/// 从 unified diff 中解析 `+++ b/<path>` 路径。
+fn patch_target_path(patch: &str) -> Option<String> {
+    for line in patch.lines() {
+        let Some(rest) = line.strip_prefix("+++ ") else { continue };
+        let path = rest.trim();
+        if path == "/dev/null" || path == "NUL" {
+            continue;
+        }
+        return Some(path.strip_prefix("b/").unwrap_or(path).to_string());
+    }
+    None
+}
+
+fn patch_hunk_header(patch: &str) -> Option<String> {
+    patch.lines().find(|l| l.starts_with("@@ ")).map(str::to_string)
+}
+
+/// 从完整 diff 文本中按 @@ 头取出单个 hunk（含 @@ 行）。
+/// 先尝试精确匹配 header 行；若失败（行号变了），按旧行号在 ±10 行范围内模糊匹配。
+fn extract_hunk_from_diff(diff: &str, header: &str) -> Option<String> {
+    let lines: Vec<&str> = diff.lines().collect();
+
+    // 1. 精确匹配
+    if let Some(start) = lines.iter().position(|l| l == &header) {
+        let mut end = lines.len();
+        for (i, line) in lines.iter().enumerate().skip(start + 1) {
+            if line.starts_with("@@ ") {
+                end = i;
+                break;
+            }
+        }
+        let body = lines[start..end].join("\n");
+        if !body.is_empty() {
+            return Some(format!("{body}\n"));
+        }
+    }
+
+    // 2. 模糊匹配：解析旧行号，在 ±10 行范围内找最接近的 @@ 头
+    let old_line = header
+        .strip_prefix("@@ -")
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.parse::<i32>().ok())?;
+
+    let mut best: Option<(usize, i32)> = None;
+    for (i, line) in lines.iter().enumerate() {
+        if !line.starts_with("@@ ") {
+            continue;
+        }
+        if let Some(lo) = line
+            .strip_prefix("@@ -")
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.parse::<i32>().ok())
+        {
+            let dist = (lo - old_line).abs();
+            if dist <= 10 && best.map_or(true, |(_, d)| dist < d) {
+                best = Some((i, dist));
+            }
+        }
+    }
+    let start = best?.0;
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        if line.starts_with("@@ ") {
+            end = i;
+            break;
+        }
+    }
+    let body = lines[start..end].join("\n");
+    if body.is_empty() {
+        None
+    } else {
+        Some(format!("{body}\n"))
+    }
+}
+
+/// 从 `git diff` 输出中取出文件头（diff --git … 到首个 @@ 之前）。
+fn diff_file_prefix(diff: &str) -> Option<String> {
+    let lines: Vec<&str> = diff.lines().collect();
+    let start = lines.iter().position(|l| l.starts_with("diff --git "))?;
+    let hunk_at = lines.iter().position(|l| l.starts_with("@@ "))?;
+    if hunk_at <= start {
+        return None;
+    }
+    Some(lines[start..hunk_at].join("\n"))
+}
+
+fn build_apply_args(is_staged: bool, three_way: bool) -> Vec<String> {
+    let mut args = vec!["apply".to_string(), "-R".to_string()];
+    if is_staged {
+        args.push("--cached".to_string());
+    }
+    if three_way {
+        args.push("--3way".to_string());
+    }
+    args.extend(
+        [
+            "--whitespace=nowarn",
+            "--recount",
+            "--inaccurate-eof",
+            "-",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    args
+}
+
+fn try_apply_patch(repo: &str, patch: &[u8], is_staged: bool, three_way: bool) -> Result<(), String> {
+    let args = build_apply_args(is_staged, three_way);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_git_with_stdin(repo, &arg_refs, patch).map(|_| ())
+}
+
+/// 用当前仓库里重新生成的 diff 拼出 patch（避免 UI 中的 patch 与磁盘状态不一致）。
+fn refresh_patch_from_repo(
+    repo: &str,
+    path: &str,
+    is_staged: bool,
+    header: &str,
+) -> Result<Vec<u8>, String> {
+    let p = normalize_path_for_git(path);
+    let diff = if is_staged {
+        run_git(repo, &["diff", "--cached", "--", &p])?
+    } else {
+        run_git(repo, &["diff", "--", &p])?
+    };
+    let prefix = diff_file_prefix(&diff).ok_or_else(|| "hunk not found in fresh diff".to_string())?;
+    let hunk = extract_hunk_from_diff(&diff, header)
+        .ok_or_else(|| "hunk not found in fresh diff".to_string())?;
+    let mut patch = format!("{prefix}\n{hunk}").into_bytes();
+    if !patch.ends_with(b"\n") {
+        patch.push(b'\n');
+    }
+    Ok(patch)
+}
+
+/// 反向应用 patch 以丢弃变更：`is_staged` 为 true 时作用于索引，否则作用于工作区。
+#[tauri::command]
+fn revert_patch(state: State<'_, AppState>, patch: String, is_staged: bool) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let header = patch_hunk_header(&patch);
+    let path = patch_target_path(&patch);
+
+    eprintln!("[revert_patch] is_staged={is_staged} path={path:?} header={header:?}");
+    eprintln!("[revert_patch] patch:\n{patch}");
+
+    // 诊断：打出文件实际内容（前 200 字节）和 git diff 当前状态
+    if let Some(rel) = path.as_deref() {
+        let abs = std::path::Path::new(&repo).join(rel);
+        match std::fs::read(&abs) {
+            Ok(bytes) => eprintln!(
+                "[revert_patch] file first 200 bytes (hex): {}",
+                bytes.iter().take(200).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
+            ),
+            Err(e) => eprintln!("[revert_patch] cannot read file: {e}"),
+        }
+        if let Ok(d) = run_git(&repo, &["diff", "--", rel]) {
+            eprintln!("[revert_patch] git diff -- {rel}:\n{d}");
+        }
+        if let Ok(d) = run_git(&repo, &["diff", "--cached", "--", rel]) {
+            eprintln!("[revert_patch] git diff --cached -- {rel}:\n{d}");
+        }
+    }
+
+    let mut input = patch.into_bytes();
+    if !input.ends_with(b"\n") {
+        input.push(b'\n');
+    }
+
+    let first_err = match try_apply_patch(&repo, &input, is_staged, false) {
+        Ok(()) => return Ok(String::new()),
+        Err(e) => { eprintln!("[revert_patch] try1 (is_staged={is_staged} 3way=false) failed: {e}"); e }
+    };
+
+    if let Err(e) = try_apply_patch(&repo, &input, is_staged, true) {
+        eprintln!("[revert_patch] try2 (is_staged={is_staged} 3way=true) failed: {e}");
+    } else {
+        return Ok(String::new());
+    }
+
+    // UI 标记与 patch 来源不一致时，尝试另一种 apply 目标（Staged ↔ 工作区）
+    if let Err(e) = try_apply_patch(&repo, &input, !is_staged, false) {
+        eprintln!("[revert_patch] try3 (is_staged={} 3way=false) failed: {e}", !is_staged);
+    } else {
+        return Ok(String::new());
+    }
+    if let Err(e) = try_apply_patch(&repo, &input, !is_staged, true) {
+        eprintln!("[revert_patch] try4 (is_staged={} 3way=true) failed: {e}", !is_staged);
+    } else {
+        return Ok(String::new());
+    }
+
+    if let (Some(path), Some(header)) = (path.as_deref(), header.as_deref()) {
+        for &staged_flag in &[is_staged, !is_staged] {
+            match refresh_patch_from_repo(&repo, path, staged_flag, header) {
+                Err(e) => eprintln!("[revert_patch] refresh_patch staged={staged_flag} failed: {e}"),
+                Ok(fresh) => {
+                    eprintln!("[revert_patch] fresh patch (staged={staged_flag}):\n{}", String::from_utf8_lossy(&fresh));
+                    if let Err(e) = try_apply_patch(&repo, &fresh, staged_flag, false) {
+                        eprintln!("[revert_patch] fresh try1 staged={staged_flag} 3way=false failed: {e}");
+                    } else {
+                        return Ok(String::new());
+                    }
+                    if let Err(e) = try_apply_patch(&repo, &fresh, staged_flag, true) {
+                        eprintln!("[revert_patch] fresh try2 staged={staged_flag} 3way=true failed: {e}");
+                    } else {
+                        return Ok(String::new());
+                    }
+                }
+            }
+        }
+    }
+
+    // 最后一招：如果文件已经没有变更，视为回退成功
+    if let Some(path) = path.as_deref() {
+        let p = normalize_path_for_git(path);
+        let staged_clean = run_git(&repo, &["diff", "--cached", "--", &p])
+            .map(|d| d.trim().is_empty())
+            .unwrap_or(false);
+        let ws_clean = run_git(&repo, &["diff", "--", &p])
+            .map(|d| d.trim().is_empty())
+            .unwrap_or(false);
+        if staged_clean && ws_clean {
+            return Ok(String::new());
+        }
+        // 最后一层保险：用 git restore 全文件回退
+        let restore_ok = if is_staged {
+            run_git(
+                &repo,
+                &["restore", "--source=HEAD", "--staged", "--worktree", "--", &p],
+            )
+            .is_ok()
+        } else {
+            run_git(&repo, &["restore", "--worktree", "--", &p]).is_ok()
+        };
+        eprintln!("[revert_patch] git restore result: ok={restore_ok}");
+        if restore_ok {
+            return Ok(String::new());
+        }
+    }
+
+    eprintln!("[revert_patch] all strategies failed, returning error: {first_err}");
+    Err(first_err)
+}
+
 #[tauri::command]
 fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
     let repo = require_repo(&state)?;
@@ -1207,6 +1452,7 @@ pub fn run() {
             get_commit_diff,
             get_binary_image_preview,
             stage_patch,
+            revert_patch,
             rename_branch,
             delete_branch,
             merge_branch,

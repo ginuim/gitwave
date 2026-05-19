@@ -8,6 +8,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import DiffPanel from './components/DiffPanel.vue'
 import HistoryTab from './components/HistoryTab.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
 import type { FileStatus, CommitLog, BranchInfo, AheadBehind } from './types'
 
@@ -253,7 +254,7 @@ async function revertFile(path: string, isStaged: boolean) {
   const msg = isStaged
     ? `确认丢弃「${path}」的全部变更（含已 Stage）？此操作不可撤销。`
     : `确认丢弃「${path}」的工作区变更？此操作不可撤销。`
-  if (!confirm(msg)) return
+  if (!(await confirm(msg))) return
   try {
     await invoke('revert_file', { path, isStaged })
     await refreshStatus()
@@ -319,12 +320,47 @@ async function handleStagePatch(patch: string) {
     await invoke('stage_patch', { patch })
     await refreshStatus()
     if (targetFile && selectedFile.value === targetFile) {
+      selectedFileIsStaged.value = false
       diffText.value = await invoke<string>('get_file_diff', {
         path: targetFile,
         isStaged: false,
       })
     }
     showToast('已 Stage', 'success')
+  } catch (e: any) {
+    showToast(String(e))
+  } finally {
+    patchStaging.value = false
+  }
+}
+
+async function handleRevertPatch(patch: string, isStaged: boolean) {
+  if (patchStaging.value) return
+  const msg = isStaged
+    ? '确认丢弃选中的已 Stage 变更？此操作不可撤销。'
+    : '确认丢弃选中的工作区变更？此操作不可撤销。'
+  if (!(await confirm(msg))) return
+  const targetFile = selectedFile.value
+  selectedFileIsStaged.value = isStaged
+  patchStaging.value = true
+  console.log('[revertPatch] isStaged=', isStaged, '\n--- patch start ---\n' + patch + '\n--- patch end ---')
+  try {
+    await invoke('revert_patch', { patch, isStaged })
+    await refreshStatus()
+    if (targetFile && selectedFile.value === targetFile) {
+      const stillThere = statuses.value.some((s) => s.path === targetFile)
+      if (!stillThere) {
+        selectedFile.value = null
+        selectedFileIsStaged.value = false
+        diffText.value = ''
+      } else {
+        diffText.value = await invoke<string>('get_file_diff', {
+          path: targetFile,
+          isStaged,
+        })
+      }
+    }
+    showToast('已丢弃变更', 'success')
   } catch (e: any) {
     showToast(String(e))
   } finally {
@@ -674,13 +710,16 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :diff-text="diffText"
         :file-name="diffFileName"
         :can-stage="!selectedCommitHash && !!selectedFile && !selectedFileIsStaged"
-        :file-path="canStage ? selectedFile : null"
+        :can-revert="!selectedCommitHash && !!selectedFile"
+        :file-path="selectedCommitHash ? null : selectedFile"
         :repo-path="repoPath"
         :workspace-is-staged="selectedFileIsStaged"
         :commit-hash="selectedCommitHash"
         :patch-staging="patchStaging"
         @stage-patch="handleStagePatch"
         @stage-file="stageFile"
+        @revert-patch="handleRevertPatch"
+        @revert-file="revertFile"
       />
     </Pane>
   </Splitpanes>
