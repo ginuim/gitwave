@@ -6,6 +6,7 @@ import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2 } from 'lucide-vue-next'
 import type { FileStatus, AppSettings, ProviderConfig, ModelConfig } from '../types'
+import { isUntrackedFile, isUntrackedPath } from '../utils/gitStatus'
 
 const props = defineProps<{
   statuses: FileStatus[]
@@ -413,6 +414,10 @@ const selectedInStaged = computed(
   stagedFiles(props.statuses).some((f) => f.path === props.selectedFile),
 )
 
+const selectedIsUntracked = computed(
+  () => props.selectedFile != null && isUntrackedPath(props.selectedFile, props.statuses),
+)
+
 async function showInFolder(relPath: string, e: Event) {
   e.stopPropagation()
   if (!props.repoPath) { emit('revealError', '未打开仓库'); return }
@@ -433,6 +438,7 @@ async function showInFolder(relPath: string, e: Event) {
         <span>Unstaged ({{ unstagedFiles(statuses).length }})</span>
         <div class="flex items-center gap-1">
           <button
+            v-if="!selectedIsUntracked"
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30"
             :disabled="!selectedInUnstaged"
             @click="emit('revertFile', props.selectedFile!, false)"
@@ -474,6 +480,7 @@ async function showInFolder(relPath: string, e: Event) {
           @click="emit('selectFile', file.path, file.isStaged)"
         >
           <button
+            v-if="!isUntrackedFile(file)"
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-orange-700/60 hover:bg-orange-600 text-white transition-colors cursor-pointer"
             title="丢弃工作区变更"
             @click.stop="emit('revertFile', file.path, false)"
@@ -512,6 +519,14 @@ async function showInFolder(relPath: string, e: Event) {
           >
             <Undo2 :size="12" />
             <span>Revert</span>
+          </button>
+          <button
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30"
+            :disabled="!selectedInStaged"
+            @click="emit('unstageFile', props.selectedFile!)"
+          >
+            <FileMinus :size="12" />
+            <span>Unstage</span>
           </button>
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer"

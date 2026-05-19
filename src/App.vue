@@ -11,6 +11,7 @@ import SettingsDialog from './components/SettingsDialog.vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
 import type { FileStatus, CommitLog, BranchInfo, AheadBehind } from './types'
+import { isUntrackedPath } from './utils/gitStatus'
 
 // State
 const repoPath = ref<string | null>(null)
@@ -29,6 +30,10 @@ const diffFileName = computed(() => {
 })
 
 const canStage = computed(() => !selectedCommitHash.value && !!selectedFile.value)
+
+const selectedFileUntracked = computed(
+  () => !!selectedFile.value && isUntrackedPath(selectedFile.value, statuses.value),
+)
 
 const branches = ref<BranchInfo[]>([])
 const branchesLoading = ref(false)
@@ -251,9 +256,12 @@ async function unstageFile(path: string) {
 }
 
 async function revertFile(path: string, isStaged: boolean) {
-  const msg = isStaged
-    ? `确认丢弃「${path}」的全部变更（含已 Stage）？此操作不可撤销。`
-    : `确认丢弃「${path}」的工作区变更？此操作不可撤销。`
+  const untracked = !isStaged && isUntrackedPath(path, statuses.value)
+  const msg = untracked
+    ? `确认删除未跟踪文件「${path}」？此操作不可恢复。`
+    : isStaged
+      ? `确认丢弃「${path}」的全部变更（含已 Stage）？此操作不可撤销。`
+      : `确认丢弃「${path}」的工作区变更？此操作不可撤销。`
   if (!(await confirm(msg))) return
   try {
     await invoke('revert_file', { path, isStaged })
@@ -710,7 +718,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :diff-text="diffText"
         :file-name="diffFileName"
         :can-stage="!selectedCommitHash && !!selectedFile && !selectedFileIsStaged"
-        :can-revert="!selectedCommitHash && !!selectedFile"
+        :can-revert="!selectedCommitHash && !!selectedFile && !selectedFileUntracked"
         :file-path="selectedCommitHash ? null : selectedFile"
         :repo-path="repoPath"
         :workspace-is-staged="selectedFileIsStaged"

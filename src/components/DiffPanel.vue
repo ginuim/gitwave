@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { ChevronDown, ChevronRight, FileCode, FilePlus, Undo2, User, CalendarDays } from 'lucide-vue-next'
+import { diffShowsNewFile } from '../utils/gitStatus'
 
 const props = defineProps<{
   diffText: string
@@ -82,6 +83,11 @@ interface CommitInfo {
   date: string
   message: string
 }
+
+/** 新文件 diff 不支持按块 Revert（仅 + 行，语义是删文件） */
+const showHunkRevert = computed(
+  () => props.canRevert && !diffShowsNewFile(props.diffText),
+)
 
 const commitInfo = computed((): CommitInfo | null => {
   const text = props.diffText
@@ -693,11 +699,11 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
       <span v-else class="text-[--text-secondary] shrink-0">选择文件查看差异</span>
       <span v-if="sections.length > 1" class="text-[10px] text-[--text-secondary] font-mono-ui shrink-0">{{ sections.length }} 个文件</span>
       <div
-        v-if="(canRevert || canStage) && selectedLineIds.size > 0"
+        v-if="(showHunkRevert || canStage) && selectedLineIds.size > 0"
         class="ml-auto flex shrink-0 items-center gap-1.5"
       >
         <button
-          v-if="canRevert"
+          v-if="showHunkRevert"
           :disabled="patchStaging"
           class="flex items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-700 text-white hover:bg-orange-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           @click="revertSelectedLines"
@@ -811,7 +817,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
             <span class="min-w-0 flex-1 truncate text-xs text-[--text-primary] font-medium font-mono-ui">{{ section.fileName || '差异' }}</span>
             <div class="ml-2 flex shrink-0 items-center gap-2">
               <button
-                v-if="canRevert"
+                v-if="showHunkRevert"
                 :disabled="patchStaging"
                 class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-700/70 hover:bg-orange-600 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="丢弃整个文件变更"
@@ -852,7 +858,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                 <span class="min-w-0 flex-1 truncate text-[10px] font-mono-ui text-[--text-secondary]">{{ hunk.header }}</span>
                 <div class="ml-2 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
                   <button
-                    v-if="canRevert"
+                    v-if="showHunkRevert"
                     :disabled="patchStaging"
                     class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-800/50 hover:bg-orange-700 text-orange-200 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     title="丢弃整个 @@ 块变更"
@@ -891,11 +897,11 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                     class="relative group/diffblk rounded-sm"
                   >
                     <div
-                      v-if="(canRevert || canStage) && changeLineIdsInBlock(hunk, seg).size > 0"
+                      v-if="(showHunkRevert || canStage) && changeLineIdsInBlock(hunk, seg).size > 0"
                       class="absolute right-2.5 top-2.5 z-40 flex items-center gap-1 opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity"
                     >
                       <button
-                        v-if="canRevert"
+                        v-if="showHunkRevert"
                         :disabled="patchStaging"
                         type="button"
                         class="diff-revert-float flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-orange-700 text-white shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
