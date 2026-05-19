@@ -115,6 +115,24 @@ fn run_git_bytes(repo: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
+/// 运行 git diff 类命令，容忍退出码 1（表示「有差异」），
+/// 与普通 `git diff` 不同，`--no-index` 模式有差异时退出码为 1。
+fn run_git_diff(repo: &str, args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    hide_git_child_console(&mut cmd);
+    cmd.current_dir(repo);
+    cmd.args(args);
+    set_git_utf8_env(&mut cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to spawn git: {e}"))?;
+    let code = output.status.code().unwrap_or(0);
+    if code != 0 && code != 1 {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn run_git_with_stdin(repo: &str, args: &[&str], input: &[u8]) -> Result<String, String> {
     let mut cmd = Command::new("git");
     hide_git_child_console(&mut cmd);
@@ -669,7 +687,7 @@ fn get_file_diff(state: State<'_, AppState>, path: String, is_staged: bool) -> R
         } else if !is_tracked_in_index(&repo, &p)? {
             let worktree = Path::new(&repo).join(&p);
             if worktree.is_file() {
-                run_git(
+                run_git_diff(
                     &repo,
                     &["diff", "--no-index", "--", GIT_NULL_PATH, &p],
                 )?
