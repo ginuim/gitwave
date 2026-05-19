@@ -657,10 +657,10 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
     <!-- Global loading indicator -->
     <div
       v-if="globalRefreshing"
-      class="fixed top-2 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 px-2 py-1 rounded-full bg-[--bg-tertiary] border border-[--border-color] shadow-md"
+      class="fixed top-2 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 px-2 py-1 rounded-full bg-[--accent] shadow-md"
     >
-      <Loader2 :size="10" class="animate-spin text-[--accent]" />
-      <span class="text-[10px] text-[--text-secondary]">同步中...</span>
+      <Loader2 :size="10" class="animate-spin text-white" />
+      <span class="text-[10px] text-white">同步中...</span>
     </div>
 
     <!-- Toast -->
