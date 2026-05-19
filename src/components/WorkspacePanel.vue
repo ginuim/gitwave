@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings } from 'lucide-vue-next'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2 } from 'lucide-vue-next'
 import type { FileStatus, AppSettings, ProviderConfig, ModelConfig } from '../types'
 
 const props = defineProps<{
@@ -21,6 +21,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   stageFile: [path: string]
   unstageFile: [path: string]
+  revertFile: [path: string, isStaged: boolean]
   selectFile: [path: string, isStaged: boolean]
   commit: [message: string]
   revealError: [message: string]
@@ -401,6 +402,17 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
 const unstagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => !f.isStaged)
 const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStaged)
 
+const selectedInUnstaged = computed(
+  () =>
+  !!props.selectedFile &&
+  unstagedFiles(props.statuses).some((f) => f.path === props.selectedFile),
+)
+const selectedInStaged = computed(
+  () =>
+  !!props.selectedFile &&
+  stagedFiles(props.statuses).some((f) => f.path === props.selectedFile),
+)
+
 async function showInFolder(relPath: string, e: Event) {
   e.stopPropagation()
   if (!props.repoPath) { emit('revealError', '未打开仓库'); return }
@@ -421,12 +433,20 @@ async function showInFolder(relPath: string, e: Event) {
         <span>Unstaged ({{ unstagedFiles(statuses).length }})</span>
         <div class="flex items-center gap-1">
           <button
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30"
+            :disabled="!selectedInUnstaged"
+            @click="emit('revertFile', props.selectedFile!, false)"
+          >
+            <Undo2 :size="12" />
+            <span>Revert</span>
+          </button>
+          <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer disabled:opacity-30"
-            :disabled="!props.selectedFile"
+            :disabled="!selectedInUnstaged"
             @click="emit('stageFile', props.selectedFile!)"
           >
             <FilePlus :size="12" />
-            <span>暂存</span>
+            <span>Stage</span>
           </button>
           <button
             v-if="unstagedFiles(statuses).length > 0"
@@ -434,7 +454,7 @@ async function showInFolder(relPath: string, e: Event) {
             @click="unstagedFiles(statuses).forEach(f => emit('stageFile', f.path))"
           >
             <FilePlus :size="12" />
-            <span>全部暂存</span>
+            <span>全部 Stage</span>
           </button>
         </div>
       </div>
@@ -443,7 +463,7 @@ async function showInFolder(relPath: string, e: Event) {
         <span class="text-xs">加载中...</span>
       </div>
       <div v-else-if="unstagedFiles(statuses).length === 0" class="px-2.5 py-2.5 text-xs text-[--text-secondary]">
-        没有未暂存的变更
+        没有 Unstaged 变更
       </div>
       <div v-else>
         <div
@@ -454,8 +474,15 @@ async function showInFolder(relPath: string, e: Event) {
           @click="emit('selectFile', file.path, file.isStaged)"
         >
           <button
+            class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-orange-700/60 hover:bg-orange-600 text-white transition-colors cursor-pointer"
+            title="丢弃工作区变更"
+            @click.stop="emit('revertFile', file.path, false)"
+          >
+            <Undo2 :size="12" />
+          </button>
+          <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-green-700/60 hover:bg-green-600 text-white transition-colors cursor-pointer"
-            title="暂存此文件"
+            title="Stage 此文件"
             @click.stop="emit('stageFile', file.path)"
           >
             <FilePlus :size="12" />
@@ -477,14 +504,26 @@ async function showInFolder(relPath: string, e: Event) {
       <!-- Staged Changes -->
       <div class="flex items-center justify-between px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10">
         <span>Staged ({{ stagedFiles(statuses).length }})</span>
-        <button
-          v-if="stagedFiles(statuses).length > 0"
-          class="text-[10px] px-2.5 py-2.5 rounded-[var(--radius)] text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer"
-          @click="stagedFiles(statuses).forEach(f => emit('unstageFile', f.path))"
-        >全部撤销</button>
+        <div v-if="stagedFiles(statuses).length > 0" class="flex items-center gap-1">
+          <button
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30"
+            :disabled="!selectedInStaged"
+            @click="emit('revertFile', props.selectedFile!, true)"
+          >
+            <Undo2 :size="12" />
+            <span>Revert</span>
+          </button>
+          <button
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer"
+            @click="stagedFiles(statuses).forEach(f => emit('unstageFile', f.path))"
+          >
+            <FileMinus :size="12" />
+            <span>全部 Unstage</span>
+          </button>
+        </div>
       </div>
       <div v-if="stagedFiles(statuses).length === 0" class="px-2.5 py-2.5 text-xs text-[--text-secondary]">
-        没有已暂存的变更
+        没有 Staged 变更
       </div>
       <div v-else>
         <div
@@ -495,8 +534,15 @@ async function showInFolder(relPath: string, e: Event) {
           @click="emit('selectFile', file.path, file.isStaged)"
         >
           <button
+            class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-orange-700/60 hover:bg-orange-600 text-white transition-colors cursor-pointer"
+            title="丢弃全部变更（含已 Stage）"
+            @click.stop="emit('revertFile', file.path, true)"
+          >
+            <Undo2 :size="12" />
+          </button>
+          <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-red-700/60 hover:bg-red-600 text-white transition-colors cursor-pointer"
-            title="撤销暂存"
+            title="Unstage 此文件"
             @click.stop="emit('unstageFile', file.path)"
           >
             <FileMinus :size="12" />
@@ -523,7 +569,7 @@ async function showInFolder(relPath: string, e: Event) {
         class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary] text-[10px] text-[--text-secondary]"
       >
         <Loader2 :size="12" class="animate-spin text-[--accent] flex-shrink-0" />
-        <span>正在加载 AI 设置与暂存差异…</span>
+        <span>正在加载 AI 设置与 Staged 差异…</span>
       </div>
       <template v-else-if="allModels.length > 0">
         <!-- Model selector + Generate button -->
@@ -571,7 +617,7 @@ async function showInFolder(relPath: string, e: Event) {
           v-if="!hasStagedFiles"
           class="px-2.5 py-1 text-[10px] text-[--text-secondary] bg-[--bg-tertiary] border-b border-[--border-color]"
         >
-          请先在文件列表中暂存文件后再使用 AI 生成提交信息
+          请先在文件列表中 Stage 文件后再使用 AI 生成提交信息
         </div>
       </template>
       <div

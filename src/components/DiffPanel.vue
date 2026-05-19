@@ -14,7 +14,7 @@ const props = defineProps<{
   workspaceIsStaged: boolean
   /** 历史里查看某条提交时传入 commit hash，否则为 null */
   commitHash: string | null
-  /** 正在暂存 patch 中（stage_patch + refresh 未完成），此时禁用所有暂存按钮 */
+  /** 正在 Stage patch 中（stage_patch + refresh 未完成），此时禁用所有 Stage 按钮 */
   patchStaging?: boolean
 }>()
 
@@ -626,7 +626,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
         @click="stageSelectedLines"
       >
         <FilePlus :size="12" />
-        暂存选中 ({{ selectedLineIds.size }})
+        Stage 选中 ({{ selectedLineIds.size }})
       </button>
     </div>
 
@@ -727,11 +727,11 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                 v-if="canStage"
                 :disabled="patchStaging"
                 class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700/70 hover:bg-green-600 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                title="暂存整个文件"
+                title="Stage 整个文件"
                 @click.stop="stageEntireFile(filePath || section.fileName)"
               >
                 <FilePlus :size="12" />
-                暂存文件
+                Stage 文件
               </button>
               <span class="text-[10px] text-[--diff-added-text] font-mono-ui">{{ section.hunks.reduce((s, h) => s + h.lines.filter(l => l.type === 'added').length, 0) }} +</span>
               <span class="text-[10px] text-[--diff-removed-text] font-mono-ui">{{ section.hunks.reduce((s, h) => s + h.lines.filter(l => l.type === 'removed').length, 0) }} -</span>
@@ -757,11 +757,11 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                   v-if="canStage"
                   :disabled="patchStaging"
                   class="ml-2 flex shrink-0 items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors opacity-0 group-hover:opacity-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                  title="暂存整个 @@ 块（含全部子区域）"
+                  title="Stage 整个 @@ 块（含全部子区域）"
                   @click.stop="stageHunk(si, hi)"
                 >
                   <FilePlus :size="12" />
-                  暂存块
+                  Stage 块
                 </button>
               </div>
 
@@ -786,12 +786,12 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                       :disabled="patchStaging"
                       type="button"
                       class="diff-stage-float absolute right-2.5 top-2.5 z-40 flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-green-700 text-white shadow-md opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                      title="暂存本段连续 +/- 行"
+                      title="Stage 本段连续 +/- 行"
                       @mousedown.stop
                       @click.stop="stageChangeBlock(si, hi, seg)"
                     >
                       <FilePlus :size="12" />
-                      暂存
+                      Stage
                     </button>
                     <div
                       v-for="li in liRange(seg.startLi, seg.endLi, hunk.lines.length - 1)"

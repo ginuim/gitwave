@@ -16,7 +16,7 @@ const repoPath = ref<string | null>(null)
 const activeTab = ref<'workspace' | 'history'>('workspace')
 const statuses = ref<FileStatus[]>([])
 const selectedFile = ref<string | null>(null)
-/** 工作区列表里当前选中项是否在「已暂存」区域（用于二进制图片 diff 预览取哪一侧） */
+/** 工作区列表里当前选中项是否在 Staged 区域（用于二进制图片 diff 预览取哪一侧） */
 const selectedFileIsStaged = ref(false)
 const selectedCommitHash = ref<string | null>(null)
 const selectedCommitMsg = ref('')
@@ -249,6 +249,36 @@ async function unstageFile(path: string) {
   }
 }
 
+async function revertFile(path: string, isStaged: boolean) {
+  const msg = isStaged
+    ? `确认丢弃「${path}」的全部变更（含已 Stage）？此操作不可撤销。`
+    : `确认丢弃「${path}」的工作区变更？此操作不可撤销。`
+  if (!confirm(msg)) return
+  try {
+    await invoke('revert_file', { path, isStaged })
+    await refreshStatus()
+    if (selectedFile.value === path) {
+      const stillThere = statuses.value.some((s) => s.path === path)
+      if (!stillThere) {
+        selectedFile.value = null
+        selectedFileIsStaged.value = false
+        diffText.value = ''
+      } else {
+        selectedFileIsStaged.value = statuses.value.some(
+          (s) => s.path === path && s.isStaged === selectedFileIsStaged.value,
+        )
+        diffText.value = await invoke<string>('get_file_diff', {
+          path,
+          isStaged: selectedFileIsStaged.value,
+        })
+      }
+    }
+    showToast('已丢弃变更', 'success')
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
 // Commit
 async function commitChanges(message: string) {
   commitLoading.value = true
@@ -294,7 +324,7 @@ async function handleStagePatch(patch: string) {
         isStaged: false,
       })
     }
-    showToast('已暂存', 'success')
+    showToast('已 Stage', 'success')
   } catch (e: any) {
     showToast(String(e))
   } finally {
@@ -478,7 +508,7 @@ async function createTag(name: string, message?: string) {
 async function stashSave(message: string | null, includeUntracked: boolean) {
   try {
     await invoke('stash_save', { message, includeUntracked })
-    showToast('已暂存', 'success')
+    showToast('已 Stash', 'success')
     await Promise.all([stashList(), refreshStatus()])
   } catch (e: any) {
     showToast(String(e))
@@ -619,6 +649,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :settings-revision="settingsRevision"
         @stage-file="stageFile"
         @unstage-file="unstageFile"
+        @revert-file="revertFile"
         @select-file="selectFile"
         @commit="commitChanges"
         @reveal-error="showToast($event)"

@@ -607,6 +607,33 @@ fn unstage_file(state: State<'_, AppState>, path: String) -> Result<(), String> 
     Ok(())
 }
 
+/// 丢弃变更：`is_staged` 为 true 时还原索引与工作区到 HEAD；否则仅丢弃工作区未 stage 部分。
+/// 未跟踪文件（`??`）使用 `git clean -f`。
+#[tauri::command]
+fn revert_file(state: State<'_, AppState>, path: String, is_staged: bool) -> Result<(), String> {
+    let repo = require_repo(&state)?;
+    let p = normalize_path_for_git(&path);
+    let status_raw = run_git(&repo, &["status", "--porcelain", "--", &p])?;
+    let first = status_raw.lines().next().unwrap_or("").trim();
+    if first.len() >= 2 {
+        let index = first.as_bytes()[0] as char;
+        let worktree = first.as_bytes()[1] as char;
+        if index == '?' && worktree == '?' {
+            run_git(&repo, &["clean", "-f", "--", &p])?;
+            return Ok(());
+        }
+    }
+    if is_staged {
+        run_git(
+            &repo,
+            &["restore", "--source=HEAD", "--staged", "--worktree", "--", &p],
+        )?;
+    } else {
+        run_git(&repo, &["restore", "--worktree", "--", &p])?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn commit_changes(state: State<'_, AppState>, message: String) -> Result<(), String> {
     let repo = require_repo(&state)?;
@@ -1172,6 +1199,7 @@ pub fn run() {
             get_git_status,
             stage_file,
             unstage_file,
+            revert_file,
             commit_changes,
             get_file_diff,
             get_git_log,
