@@ -51,14 +51,58 @@ fn file_path_to_string(fp: tauri_plugin_dialog::FilePath) -> String {
     fp.to_string()
 }
 
+/// Git 在 `core.quotepath=true` 时会把非 ASCII 路径打成 `"\344\275\240..."`，需还原为真实路径。
+fn unquote_git_path(path: &str) -> String {
+    let path = path.trim();
+    if path.len() < 2 || !path.starts_with('"') || !path.ends_with('"') {
+        return path.to_string();
+    }
+    let inner = &path[1..path.len() - 1];
+    let mut out = String::new();
+    let bytes = inner.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+            match bytes[i] {
+                b'"' => out.push('"'),
+                b'\\' => out.push('\\'),
+                b'n' => out.push('\n'),
+                b't' => out.push('\t'),
+                b'0'..=b'7' => {
+                    let start = i;
+                    i += 1;
+                    while i < bytes.len() && i - start < 3 && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    let octal = std::str::from_utf8(&bytes[start..i]).unwrap_or("0");
+                    if let Ok(v) = u32::from_str_radix(octal, 8) {
+                        if let Some(ch) = char::from_u32(v) {
+                            out.push(ch);
+                        }
+                    }
+                    continue;
+                }
+                c => out.push(c as char),
+            }
+            i += 1;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn normalize_path_for_git(path: &str) -> String {
+    let path = unquote_git_path(path);
     #[cfg(windows)]
     {
         path.replace('\\', "/")
     }
     #[cfg(not(windows))]
     {
-        path.to_string()
+        path
     }
 }
 
@@ -86,9 +130,17 @@ fn hide_git_child_console(cmd: &mut Command) {
 }
 
 fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
+    run_git_with_config(repo, &[], args)
+}
+
+/// 与 `run_git` 相同，但可在子命令前注入 `-c key=value`（如关闭 quotepath）。
+fn run_git_with_config(repo: &str, config: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new("git");
     hide_git_child_console(&mut cmd);
     cmd.current_dir(repo);
+    for (key, value) in config {
+        cmd.arg("-c").arg(format!("{key}={value}"));
+    }
     cmd.args(args);
     set_git_utf8_env(&mut cmd);
     let output = cmd
@@ -395,11 +447,21 @@ fn save_pinned_branches(app: &tauri::AppHandle, branches: &[String]) -> Result<(
 
 fn parse_porcelain_path(rest: &str) -> String {
     let rest = rest.trim_start();
-    if let Some(pos) = rest.rfind(" -> ") {
-        rest[pos + 4..].trim().to_string()
+    let path = if let Some(pos) = rest.rfind(" -> ") {
+        rest[pos + 4..].trim()
     } else {
-        rest.to_string()
-    }
+        rest.trim()
+    };
+    unquote_git_path(path)
+}
+
+fn is_submodule_path(repo: &str, rel: &str) -> bool {
+    run_git(repo, &["ls-files", "-s", "--", rel])
+        .ok()
+        .and_then(|out| {
+            out.lines().next().map(|line| line.starts_with("160000 "))
+        })
+        .unwrap_or(false)
 }
 
 fn push_status_entries(
@@ -605,7 +667,11 @@ fn switch_repository(app: tauri::AppHandle, path: String) -> Result<String, Stri
 #[tauri::command]
 fn get_git_status(state: State<'_, AppState>) -> Result<Vec<FileStatus>, String> {
     let repo = require_repo(&state)?;
-    let raw = run_git(&repo, &["status", "--porcelain"])?;
+    let raw = run_git_with_config(
+        &repo,
+        &[("core.quotepath", "false")],
+        &["status", "--porcelain"],
+    )?;
     Ok(parse_git_status_porcelain(&raw))
 }
 
@@ -631,13 +697,27 @@ fn unstage_file(state: State<'_, AppState>, path: String) -> Result<(), String> 
 fn revert_file(state: State<'_, AppState>, path: String, is_staged: bool) -> Result<(), String> {
     let repo = require_repo(&state)?;
     let p = normalize_path_for_git(&path);
-    let status_raw = run_git(&repo, &["status", "--porcelain", "--", &p])?;
+    let status_raw = run_git_with_config(
+        &repo,
+        &[("core.quotepath", "false")],
+        &["status", "--porcelain", "--", &p],
+    )?;
     let first = status_raw.lines().next().unwrap_or("").trim();
     if first.len() >= 2 {
         let index = first.as_bytes()[0] as char;
         let worktree = first.as_bytes()[1] as char;
         if index == '?' && worktree == '?' {
             run_git(&repo, &["clean", "-f", "--", &p])?;
+            return Ok(());
+        }
+    }
+    if !is_staged && is_submodule_path(&repo, &p) {
+        let sub = Path::new(&repo).join(&p);
+        if sub.is_dir() {
+            let sub_str = sub
+                .to_str()
+                .ok_or_else(|| "invalid submodule path".to_string())?;
+            run_git(sub_str, &["restore", "--worktree", "."])?;
             return Ok(());
         }
     }
