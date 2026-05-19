@@ -887,7 +887,7 @@ fn stage_patch(state: State<'_, AppState>, patch: String) -> Result<String, Stri
     run_git_with_stdin(&repo, &["apply", "--cached", "-"], patch.as_bytes())
 }
 
-/// 从 unified diff 中解析 `+++ b/<path>` 路径。
+/// 从 unified diff 中解析 `+++ b/<path>` 路径（含 quotepath 引号路径）。
 fn patch_target_path(patch: &str) -> Option<String> {
     for line in patch.lines() {
         let Some(rest) = line.strip_prefix("+++ ") else { continue };
@@ -895,9 +895,35 @@ fn patch_target_path(patch: &str) -> Option<String> {
         if path == "/dev/null" || path == "NUL" {
             continue;
         }
-        return Some(path.strip_prefix("b/").unwrap_or(path).to_string());
+        let raw = path.strip_prefix("b/").unwrap_or(path);
+        return Some(normalize_path_for_git(raw));
     }
     None
+}
+
+/// 取用于 hunk 定位的 diff 文本（未跟踪文件走 `--no-index`）。
+fn repo_diff_for_hunk(repo: &str, path: &str, is_staged: bool) -> Result<String, String> {
+    let p = normalize_path_for_git(path);
+    if is_staged {
+        return run_git(repo, &["diff", "--cached", "--", &p]);
+    }
+    let diff = run_git(repo, &["diff", "--", &p])?;
+    if !diff.is_empty() {
+        return Ok(diff);
+    }
+    if !is_tracked_in_index(repo, &p)? {
+        let worktree = Path::new(repo).join(&p);
+        if worktree.is_file() {
+            return run_git_diff(repo, &["diff", "--no-index", "--", GIT_NULL_PATH, &p]);
+        }
+    }
+    Ok(diff)
+}
+
+/// 指定 @@ 头是否仍存在于 diff 中（精确匹配，避免误判相邻 hunk）。
+fn hunk_still_in_diff(repo: &str, path: &str, is_staged: bool, header: &str) -> Result<bool, String> {
+    let diff = repo_diff_for_hunk(repo, path, is_staged)?;
+    Ok(diff.lines().any(|line| line == header))
 }
 
 fn patch_hunk_header(patch: &str) -> Option<String> {
@@ -1008,11 +1034,7 @@ fn refresh_patch_from_repo(
     header: &str,
 ) -> Result<Vec<u8>, String> {
     let p = normalize_path_for_git(path);
-    let diff = if is_staged {
-        run_git(repo, &["diff", "--cached", "--", &p])?
-    } else {
-        run_git(repo, &["diff", "--", &p])?
-    };
+    let diff = repo_diff_for_hunk(repo, &p, is_staged)?;
     let prefix = diff_file_prefix(&diff).ok_or_else(|| "hunk not found in fresh diff".to_string())?;
     let hunk = extract_hunk_from_diff(&diff, header)
         .ok_or_else(|| "hunk not found in fresh diff".to_string())?;
@@ -1023,113 +1045,63 @@ fn refresh_patch_from_repo(
     Ok(patch)
 }
 
+/// 反向 apply；若 patch 的 @@ 头与仓库 diff 一致，则要求回退后该头消失。
+fn try_revert_hunk(
+    repo: &str,
+    patch: &[u8],
+    path: &str,
+    is_staged: bool,
+    header: &str,
+    three_way: bool,
+) -> Result<(), String> {
+    let header_in_repo = hunk_still_in_diff(repo, path, is_staged, header)?;
+    try_apply_patch(repo, patch, is_staged, three_way)?;
+    if header_in_repo && hunk_still_in_diff(repo, path, is_staged, header)? {
+        return Err("patch applied but hunk still present".to_string());
+    }
+    Ok(())
+}
+
 /// 反向应用 patch 以丢弃变更：`is_staged` 为 true 时作用于索引，否则作用于工作区。
 #[tauri::command]
 fn revert_patch(state: State<'_, AppState>, patch: String, is_staged: bool) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    let header = patch_hunk_header(&patch);
-    let path = patch_target_path(&patch);
-
-    eprintln!("[revert_patch] is_staged={is_staged} path={path:?} header={header:?}");
-    eprintln!("[revert_patch] patch:\n{patch}");
-
-    // 诊断：打出文件实际内容（前 200 字节）和 git diff 当前状态
-    if let Some(rel) = path.as_deref() {
-        let abs = std::path::Path::new(&repo).join(rel);
-        match std::fs::read(&abs) {
-            Ok(bytes) => eprintln!(
-                "[revert_patch] file first 200 bytes (hex): {}",
-                bytes.iter().take(200).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
-            ),
-            Err(e) => eprintln!("[revert_patch] cannot read file: {e}"),
-        }
-        if let Ok(d) = run_git(&repo, &["diff", "--", rel]) {
-            eprintln!("[revert_patch] git diff -- {rel}:\n{d}");
-        }
-        if let Ok(d) = run_git(&repo, &["diff", "--cached", "--", rel]) {
-            eprintln!("[revert_patch] git diff --cached -- {rel}:\n{d}");
-        }
-    }
+    let header = patch_hunk_header(&patch).ok_or_else(|| "patch has no @@ hunk header".to_string())?;
+    let path = patch_target_path(&patch).ok_or_else(|| "patch has no file path".to_string())?;
 
     let mut input = patch.into_bytes();
     if !input.ends_with(b"\n") {
         input.push(b'\n');
     }
 
-    let first_err = match try_apply_patch(&repo, &input, is_staged, false) {
-        Ok(()) => return Ok(String::new()),
-        Err(e) => { eprintln!("[revert_patch] try1 (is_staged={is_staged} 3way=false) failed: {e}"); e }
-    };
+    let mut last_err = String::new();
 
-    if let Err(e) = try_apply_patch(&repo, &input, is_staged, true) {
-        eprintln!("[revert_patch] try2 (is_staged={is_staged} 3way=true) failed: {e}");
-    } else {
-        return Ok(String::new());
-    }
-
-    // UI 标记与 patch 来源不一致时，尝试另一种 apply 目标（Staged ↔ 工作区）
-    if let Err(e) = try_apply_patch(&repo, &input, !is_staged, false) {
-        eprintln!("[revert_patch] try3 (is_staged={} 3way=false) failed: {e}", !is_staged);
-    } else {
-        return Ok(String::new());
-    }
-    if let Err(e) = try_apply_patch(&repo, &input, !is_staged, true) {
-        eprintln!("[revert_patch] try4 (is_staged={} 3way=true) failed: {e}", !is_staged);
-    } else {
-        return Ok(String::new());
-    }
-
-    if let (Some(path), Some(header)) = (path.as_deref(), header.as_deref()) {
-        for &staged_flag in &[is_staged, !is_staged] {
-            match refresh_patch_from_repo(&repo, path, staged_flag, header) {
-                Err(e) => eprintln!("[revert_patch] refresh_patch staged={staged_flag} failed: {e}"),
-                Ok(fresh) => {
-                    eprintln!("[revert_patch] fresh patch (staged={staged_flag}):\n{}", String::from_utf8_lossy(&fresh));
-                    if let Err(e) = try_apply_patch(&repo, &fresh, staged_flag, false) {
-                        eprintln!("[revert_patch] fresh try1 staged={staged_flag} 3way=false failed: {e}");
-                    } else {
-                        return Ok(String::new());
-                    }
-                    if let Err(e) = try_apply_patch(&repo, &fresh, staged_flag, true) {
-                        eprintln!("[revert_patch] fresh try2 staged={staged_flag} 3way=true failed: {e}");
-                    } else {
-                        return Ok(String::new());
-                    }
-                }
+    // 优先用仓库实时 diff 拼 patch，避免 UI 与磁盘不一致
+    if let Ok(fresh) = refresh_patch_from_repo(&repo, &path, is_staged, &header) {
+        for three_way in [false, true] {
+            match try_revert_hunk(&repo, &fresh, &path, is_staged, &header, three_way) {
+                Ok(()) => return Ok(String::new()),
+                Err(e) => last_err = e,
             }
         }
     }
 
-    // 最后一招：如果文件已经没有变更，视为回退成功
-    if let Some(path) = path.as_deref() {
-        let p = normalize_path_for_git(path);
-        let staged_clean = run_git(&repo, &["diff", "--cached", "--", &p])
-            .map(|d| d.trim().is_empty())
-            .unwrap_or(false);
-        let ws_clean = run_git(&repo, &["diff", "--", &p])
-            .map(|d| d.trim().is_empty())
-            .unwrap_or(false);
-        if staged_clean && ws_clean {
-            return Ok(String::new());
-        }
-        // 最后一层保险：用 git restore 全文件回退
-        let restore_ok = if is_staged {
-            run_git(
-                &repo,
-                &["restore", "--source=HEAD", "--staged", "--worktree", "--", &p],
-            )
-            .is_ok()
-        } else {
-            run_git(&repo, &["restore", "--worktree", "--", &p]).is_ok()
-        };
-        eprintln!("[revert_patch] git restore result: ok={restore_ok}");
-        if restore_ok {
-            return Ok(String::new());
+    for three_way in [false, true] {
+        match try_revert_hunk(&repo, &input, &path, is_staged, &header, three_way) {
+            Ok(()) => return Ok(String::new()),
+            Err(e) => last_err = e,
         }
     }
 
-    eprintln!("[revert_patch] all strategies failed, returning error: {first_err}");
-    Err(first_err)
+    if !hunk_still_in_diff(&repo, &path, is_staged, &header)? {
+        return Ok(String::new());
+    }
+
+    Err(if last_err.is_empty() {
+        "failed to revert hunk".to_string()
+    } else {
+        last_err
+    })
 }
 
 #[tauri::command]
