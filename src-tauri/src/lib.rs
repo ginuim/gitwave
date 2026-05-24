@@ -1198,6 +1198,60 @@ fn revert_patch(state: State<'_, AppState>, patch: String, is_staged: bool) -> R
     })
 }
 
+fn parse_ahead_behind(repo: &str, range: &str) -> Result<AheadBehind, String> {
+    let output = run_git(repo, &["rev-list", "--count", "--left-right", range])?;
+    let trimmed = output.trim();
+    let parts: Vec<&str> = trimmed.split('\t').collect();
+    let behind = parts.first().unwrap_or(&"0").parse().unwrap_or(0);
+    let ahead = parts.get(1).copied().unwrap_or("0").parse().unwrap_or(0);
+    Ok(AheadBehind { ahead, behind })
+}
+
+/// 无本地 upstream 时，用 push 会用的 remote 分支作对比基准。
+fn ahead_behind_compare_ref(repo: &str, branch: &str) -> Result<String, String> {
+    let remote = resolve_push_remote(repo, branch)?;
+    let remote_branch = format!("{remote}/{branch}");
+    if run_git(repo, &["rev-parse", "--verify", &remote_branch]).is_ok() {
+        return Ok(remote_branch);
+    }
+    default_remote_branch(repo, &remote)
+}
+
+fn default_remote_branch(repo: &str, remote: &str) -> Result<String, String> {
+    if let Ok(sym) = run_git(
+        repo,
+        &["symbolic-ref", &format!("refs/remotes/{remote}/HEAD")],
+    ) {
+        let sym = sym.trim();
+        if let Some(short) = sym.strip_prefix("refs/remotes/") {
+            return Ok(short.to_string());
+        }
+    }
+    for name in ["main", "master", "develop"] {
+        let candidate = format!("{remote}/{name}");
+        if run_git(repo, &["rev-parse", "--verify", &candidate]).is_ok() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!("无法确定 {remote} 的默认对比分支"))
+}
+
+fn ahead_behind_for_branch(repo: &str, branch: &str) -> Result<AheadBehind, String> {
+    let compare = match run_git(
+        repo,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    ) {
+        Ok(upstream) => upstream.trim().to_string(),
+        Err(_) => ahead_behind_compare_ref(repo, branch)?,
+    };
+    parse_ahead_behind(repo, &format!("{compare}...HEAD"))
+}
+
 #[tauri::command]
 fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
     let repo = require_repo(&state)?;
@@ -1206,16 +1260,7 @@ fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
     if branch == "HEAD" {
         return Ok(AheadBehind { ahead: 0, behind: 0 });
     }
-    let upstream = match run_git(&repo, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]) {
-        Ok(u) => u.trim().to_string(),
-        Err(_) => return Ok(AheadBehind { ahead: 0, behind: 0 }),
-    };
-    let output = run_git(&repo, &["rev-list", "--count", "--left-right", &format!("{upstream}...HEAD")])?;
-    let trimmed = output.trim();
-    let parts: Vec<&str> = trimmed.split('\t').collect();
-    let behind = parts.first().unwrap_or(&"0").parse().unwrap_or(0);
-    let ahead = parts.get(1).copied().unwrap_or("0").parse().unwrap_or(0);
-    Ok(AheadBehind { ahead, behind })
+    ahead_behind_for_branch(&repo, &branch)
 }
 
 fn has_upstream(repo: &str) -> bool {
