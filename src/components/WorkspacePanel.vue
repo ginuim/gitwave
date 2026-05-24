@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2 } from 'lucide-vue-next'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2, Trash2 } from 'lucide-vue-next'
 import type { FileStatus, AppSettings, ProviderConfig, ModelConfig, AiStagedDiffContext } from '../types'
 import { isUntrackedFile, isUntrackedPath } from '../utils/gitStatus'
 
@@ -23,6 +23,7 @@ const emit = defineEmits<{
   stageFile: [path: string]
   unstageFile: [path: string]
   revertFile: [path: string, isStaged: boolean]
+  deleteFile: [path: string, isStaged: boolean]
   selectFile: [path: string, isStaged: boolean]
   commit: [message: string]
   revealError: [message: string]
@@ -413,15 +414,15 @@ async function showInFolder(relPath: string, e: Event) {
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-[--bg-secondary]">
+  <div class="h-full flex flex-col bg-[--bg-secondary] min-w-[320px]">
     <!-- Unstaged Changes -->
     <div class="flex-1 overflow-y-auto min-h-0">
-      <div class="flex items-center justify-between px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10">
-        <span>Unstaged ({{ unstagedFiles(statuses).length }})</span>
-        <div class="flex items-center gap-1">
+      <div class="flex items-center justify-between gap-2 px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10 min-w-0">
+        <span class="flex-shrink-0 whitespace-nowrap">Unstaged ({{ unstagedFiles(statuses).length }})</span>
+        <div class="flex items-center gap-1 flex-nowrap flex-shrink-0 overflow-x-auto">
           <button
             v-if="!selectedIsUntracked"
-            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30"
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInUnstaged"
             @click="emit('revertFile', props.selectedFile!, false)"
           >
@@ -429,7 +430,15 @@ async function showInFolder(relPath: string, e: Event) {
             <span>Revert</span>
           </button>
           <button
-            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer disabled:opacity-30"
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
+            :disabled="!selectedInUnstaged"
+            @click="emit('deleteFile', props.selectedFile!, false)"
+          >
+            <Trash2 :size="12" />
+            <span>Delete</span>
+          </button>
+          <button
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInUnstaged"
             @click="emit('stageFile', props.selectedFile!)"
           >
@@ -438,7 +447,7 @@ async function showInFolder(relPath: string, e: Event) {
           </button>
           <button
             v-if="unstagedFiles(statuses).length > 0"
-            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer"
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
             @click="unstagedFiles(statuses).forEach(f => emit('stageFile', f.path))"
           >
             <FilePlus :size="12" />
@@ -470,13 +479,20 @@ async function showInFolder(relPath: string, e: Event) {
             <Undo2 :size="12" />
           </button>
           <button
+            class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-red-800/70 hover:bg-red-700 text-white transition-colors cursor-pointer"
+            title="删除文件"
+            @click.stop="emit('deleteFile', file.path, false)"
+          >
+            <Trash2 :size="12" />
+          </button>
+          <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-green-700/60 hover:bg-green-600 text-white transition-colors cursor-pointer"
             title="Stage 此文件"
             @click.stop="emit('stageFile', file.path)"
           >
             <FilePlus :size="12" />
           </button>
-          <span class="truncate flex-1 hover:text-[--accent] transition-colors font-mono-ui">{{ file.path }}</span>
+          <span class="truncate flex-1 min-w-0 hover:text-[--accent] transition-colors font-mono-ui" :title="file.path">{{ file.path }}</span>
           <button
             v-if="repoPath"
             type="button"
@@ -491,11 +507,11 @@ async function showInFolder(relPath: string, e: Event) {
       </div>
 
       <!-- Staged Changes -->
-      <div class="flex items-center justify-between px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10">
-        <span>Staged ({{ stagedFiles(statuses).length }})</span>
-        <div v-if="stagedFiles(statuses).length > 0" class="flex items-center gap-1">
+      <div class="flex items-center justify-between gap-2 px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10 min-w-0">
+        <span class="flex-shrink-0 whitespace-nowrap">Staged ({{ stagedFiles(statuses).length }})</span>
+        <div v-if="stagedFiles(statuses).length > 0" class="flex items-center gap-1 flex-nowrap flex-shrink-0 overflow-x-auto">
           <button
-            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30"
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInStaged"
             @click="emit('revertFile', props.selectedFile!, true)"
           >
@@ -503,7 +519,15 @@ async function showInFolder(relPath: string, e: Event) {
             <span>Revert</span>
           </button>
           <button
-            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30"
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
+            :disabled="!selectedInStaged"
+            @click="emit('deleteFile', props.selectedFile!, true)"
+          >
+            <Trash2 :size="12" />
+            <span>Delete</span>
+          </button>
+          <button
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInStaged"
             @click="emit('unstageFile', props.selectedFile!)"
           >
@@ -511,7 +535,7 @@ async function showInFolder(relPath: string, e: Event) {
             <span>Unstage</span>
           </button>
           <button
-            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer"
+            class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
             @click="stagedFiles(statuses).forEach(f => emit('unstageFile', f.path))"
           >
             <FileMinus :size="12" />
@@ -538,13 +562,20 @@ async function showInFolder(relPath: string, e: Event) {
             <Undo2 :size="12" />
           </button>
           <button
+            class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-red-800/70 hover:bg-red-700 text-white transition-colors cursor-pointer"
+            title="删除文件"
+            @click.stop="emit('deleteFile', file.path, true)"
+          >
+            <Trash2 :size="12" />
+          </button>
+          <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-red-700/60 hover:bg-red-600 text-white transition-colors cursor-pointer"
             title="Unstage 此文件"
             @click.stop="emit('unstageFile', file.path)"
           >
             <FileMinus :size="12" />
           </button>
-          <span class="truncate flex-1 hover:text-[--accent] transition-colors font-mono-ui">{{ file.path }}</span>
+          <span class="truncate flex-1 min-w-0 hover:text-[--accent] transition-colors font-mono-ui" :title="file.path">{{ file.path }}</span>
           <button
             v-if="repoPath"
             type="button"

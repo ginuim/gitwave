@@ -718,7 +718,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
     </div>
 
     <!-- Fetch / Push / Pull / Branch -->
-    <div v-if="repoPath" class="flex flex-wrap gap-1 px-2.5 py-1 border-b border-[--border-color]">
+    <div v-if="repoPath" class="flex flex-nowrap gap-1 px-2.5 py-1 border-b border-[--border-color] overflow-x-auto">
       <button
         class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius)] text-xs transition-colors whitespace-nowrap cursor-pointer"
         :class="fetchLoading
@@ -801,7 +801,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
           v-for="node in pinnedLocalBranches"
           :key="'p-'+node.key"
           :data-current-branch="node.isLeaf && node.isCurrent ? '' : undefined"
-          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
+          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group min-w-0"
           :class="node.isLeaf
             ? (node.isCurrent
               ? 'text-[--accent] font-medium cursor-default'
@@ -831,7 +831,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
 
           <GitBranch v-if="node.isLeaf" :size="12" class="flex-shrink-0" />
 
-          <span class="truncate">{{ node.label }}</span>
+          <span class="truncate min-w-0" :title="node.isLeaf ? branchRef(node) : node.key.replace(/\/$/, '')">{{ node.label }}</span>
           <button
             v-if="node.isLeaf"
             class="flex-shrink-0 ml-auto p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer transition-colors text-yellow-400"
@@ -851,7 +851,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
           v-for="node in regularLocalBranches"
           :key="node.key"
           :data-current-branch="node.isLeaf && node.isCurrent ? '' : undefined"
-          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
+          class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group min-w-0"
           :class="node.isLeaf
             ? (node.isCurrent
               ? 'text-[--accent] font-medium cursor-default'
@@ -881,7 +881,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
 
           <GitBranch v-if="node.isLeaf" :size="12" class="flex-shrink-0" />
 
-          <span class="truncate">{{ node.label }}</span>
+          <span class="truncate min-w-0" :title="node.isLeaf ? branchRef(node) : node.key.replace(/\/$/, '')">{{ node.label }}</span>
           <button
             v-if="node.isLeaf"
             class="flex-shrink-0 ml-auto p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer transition-colors"
@@ -910,7 +910,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
               v-for="node in remoteBranches"
               :key="node.key"
               :data-current-branch="node.isLeaf && node.isCurrent ? '' : undefined"
-              class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
+              class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group min-w-0"
               :class="node.isLeaf
                 ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
                 : 'text-[--text-secondary] hover:text-[--text-primary]'"
@@ -936,7 +936,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
 
               <!-- Spacer replaces removed Globe to keep indentation -->
               <div v-if="node.isLeaf" class="w-[13px] flex-shrink-0" />
-              <span class="truncate">{{ node.label }}</span>
+              <span class="truncate min-w-0" :title="node.isLeaf ? branchRef(node) : node.label">{{ node.label }}</span>
               <span
                 v-if="node.isHead"
                 class="flex-shrink-0 ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[--accent] text-white leading-none"

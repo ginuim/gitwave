@@ -288,6 +288,22 @@ async function revertFile(path: string, isStaged: boolean) {
   }
 }
 
+async function deleteFile(path: string, isStaged: boolean) {
+  if (!(await confirm(`确认删除文件「${path}」？此操作不可恢复。`))) return
+  try {
+    await invoke('delete_file', { path, isStaged })
+    await refreshStatus()
+    if (selectedFile.value === path) {
+      selectedFile.value = null
+      selectedFileIsStaged.value = false
+      diffText.value = ''
+    }
+    showToast('已删除文件', 'success')
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
+
 // Commit
 async function commitChanges(message: string) {
   commitLoading.value = true
@@ -720,7 +736,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
     </Pane>
 
     <!-- Middle panel -->
-    <Pane :min-size="25">
+    <Pane :min-size="28">
       <!-- Workspace tab -->
       <WorkspacePanel
         v-if="activeTab === 'workspace'"
@@ -734,6 +750,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @stage-file="stageFile"
         @unstage-file="unstageFile"
         @revert-file="revertFile"
+        @delete-file="deleteFile"
         @select-file="selectFile"
         @commit="commitChanges"
         @reveal-error="showToast($event)"

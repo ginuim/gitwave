@@ -17,7 +17,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-[--bg-secondary]">
+  <div class="h-full flex flex-col bg-[--bg-secondary] min-w-[320px]">
     <!-- Header with filter toggle -->
     <div class="flex items-center justify-between px-2.5 py-2.5 bg-[--bg-tertiary] border-b border-[--border-color] text-xs">
       <span class="text-xs text-[--text-secondary] uppercase tracking-wide font-mono-ui">

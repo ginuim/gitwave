@@ -798,6 +798,29 @@ fn revert_file(state: State<'_, AppState>, path: String, is_staged: bool) -> Res
     Ok(())
 }
 
+/// 从磁盘删除文件：未跟踪文件用 `git clean -f`；已跟踪文件用 `git rm -f`（删除并 stage）。
+#[tauri::command]
+fn delete_file(state: State<'_, AppState>, path: String, _is_staged: bool) -> Result<(), String> {
+    let repo = require_repo(&state)?;
+    let p = normalize_path_for_git(&path);
+    let status_raw = run_git_with_config(
+        &repo,
+        &[("core.quotepath", "false")],
+        &["status", "--porcelain", "--", &p],
+    )?;
+    let first = status_raw.lines().next().unwrap_or("").trim();
+    if first.len() >= 2 {
+        let index = first.as_bytes()[0] as char;
+        let worktree = first.as_bytes()[1] as char;
+        if index == '?' && worktree == '?' {
+            run_git(&repo, &["clean", "-f", "--", &p])?;
+            return Ok(());
+        }
+    }
+    run_git(&repo, &["rm", "-f", "--", &p])?;
+    Ok(())
+}
+
 #[tauri::command]
 fn commit_changes(state: State<'_, AppState>, message: String) -> Result<(), String> {
     let repo = require_repo(&state)?;
@@ -2121,6 +2144,7 @@ pub fn run() {
             stage_file,
             unstage_file,
             revert_file,
+            delete_file,
             commit_changes,
             get_file_diff,
             get_git_log,
