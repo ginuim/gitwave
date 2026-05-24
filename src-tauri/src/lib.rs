@@ -43,6 +43,15 @@ pub struct StashEntry {
     pub branch: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeState {
+    pub has_changes: bool,
+    pub in_merge: bool,
+    pub in_rebase: bool,
+    pub in_cherry_pick: bool,
+}
+
 pub struct AppState {
     repo_path: Mutex<Option<String>>,
 }
@@ -353,6 +362,63 @@ fn require_repo(state: &AppState) -> Result<String, String> {
 fn is_git_dir(root: &Path) -> bool {
     let git = root.join(".git");
     git.exists()
+}
+
+fn git_state_path_exists(repo: &str, name: &str) -> bool {
+    let path = match run_git(repo, &["rev-parse", "--git-path", name]) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let path = path.trim();
+    !path.is_empty() && Path::new(path).exists()
+}
+
+fn is_in_merge(repo: &str) -> bool {
+    run_git(repo, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok()
+}
+
+fn is_in_rebase(repo: &str) -> bool {
+    git_state_path_exists(repo, "rebase-merge") || git_state_path_exists(repo, "rebase-apply")
+}
+
+fn is_in_cherry_pick(repo: &str) -> bool {
+    run_git(repo, &["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"]).is_ok()
+}
+
+fn has_worktree_changes(repo: &str) -> Result<bool, String> {
+    let raw = run_git_with_config(
+        repo,
+        &[("core.quotepath", "false")],
+        &["status", "--porcelain"],
+    )?;
+    Ok(!raw.trim().is_empty())
+}
+
+fn discard_all_changes(repo: &str) -> Result<(), String> {
+    if is_in_rebase(repo) {
+        run_git(repo, &["rebase", "--abort"])?;
+    }
+    if is_in_merge(repo) {
+        run_git(repo, &["merge", "--abort"])?;
+    }
+    if is_in_cherry_pick(repo) {
+        run_git(repo, &["cherry-pick", "--abort"])?;
+    }
+    run_git(repo, &["reset", "--hard"])?;
+    run_git(repo, &["clean", "-fd"])?;
+    Ok(())
+}
+
+fn prepare_checkout(repo: &str, target: &str, mode: &str) -> Result<(), String> {
+    match mode {
+        "normal" => Ok(()),
+        "stash" => {
+            let msg = format!("WIP before switching to {target}");
+            run_git(repo, &["stash", "push", "-u", "-m", &msg]).map(|_| ())
+        }
+        "discard" => discard_all_changes(repo),
+        other => Err(format!("unknown checkout mode: {other}")),
+    }
 }
 
 fn repos_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -860,6 +926,17 @@ fn create_branch(state: State<'_, AppState>, name: String) -> Result<String, Str
 }
 
 #[tauri::command]
+fn get_worktree_state(state: State<'_, AppState>) -> Result<WorktreeState, String> {
+    let repo = require_repo(&state)?;
+    Ok(WorktreeState {
+        has_changes: has_worktree_changes(&repo)?,
+        in_merge: is_in_merge(&repo),
+        in_rebase: is_in_rebase(&repo),
+        in_cherry_pick: is_in_cherry_pick(&repo),
+    })
+}
+
+#[tauri::command]
 fn checkout_branch(state: State<'_, AppState>, name: String) -> Result<String, String> {
     let repo = require_repo(&state)?;
     run_git(&repo, &["checkout", &name])
@@ -870,6 +947,23 @@ fn checkout_remote_branch(state: State<'_, AppState>, remote: String) -> Result<
     let repo = require_repo(&state)?;
     let local = remote.split('/').last().unwrap_or(&remote);
     run_git(&repo, &["checkout", "-b", local, "--track", &remote])
+}
+
+#[tauri::command]
+fn checkout_with_mode(
+    state: State<'_, AppState>,
+    target: String,
+    mode: String,
+    is_remote: bool,
+) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    prepare_checkout(&repo, &target, &mode)?;
+    if is_remote {
+        let local = target.split('/').last().unwrap_or(&target);
+        run_git(&repo, &["checkout", "-b", local, "--track", &target])
+    } else {
+        run_git(&repo, &["checkout", &target])
+    }
 }
 
 #[tauri::command]
@@ -1583,8 +1677,10 @@ pub fn run() {
             delete_branch,
             merge_branch,
             create_branch,
+            get_worktree_state,
             checkout_branch,
             checkout_remote_branch,
+            checkout_with_mode,
             git_fetch,
             get_ahead_behind,
             git_push,

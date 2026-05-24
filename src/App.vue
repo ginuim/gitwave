@@ -10,7 +10,7 @@ import HistoryTab from './components/HistoryTab.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
-import type { FileStatus, CommitLog, BranchInfo, AheadBehind } from './types'
+import type { FileStatus, CommitLog, BranchInfo, AheadBehind, WorktreeState, CheckoutMode } from './types'
 import { isUntrackedPath } from './utils/gitStatus'
 
 // State
@@ -429,26 +429,66 @@ async function refreshAheadBehind() {
 }
 
 // Checkout branch
-async function checkoutBranch(name: string) {
+const checkoutDialog = ref<{
+  target: string
+  isRemote: boolean
+  state: WorktreeState
+} | null>(null)
+
+function worktreeNeedsAction(state: WorktreeState): boolean {
+  return state.hasChanges || state.inMerge || state.inRebase || state.inCherryPick
+}
+
+function checkoutDialogSummary(state: WorktreeState): string {
+  const parts: string[] = []
+  if (state.inMerge) parts.push('进行中的合并')
+  if (state.inRebase) parts.push('进行中的 Rebase')
+  if (state.inCherryPick) parts.push('进行中的 Cherry-pick')
+  if (state.hasChanges) parts.push('未提交的更改')
+  return parts.join('、')
+}
+
+async function performCheckout(target: string, isRemote: boolean, mode: CheckoutMode) {
   try {
-    await invoke('checkout_branch', { name })
-    showToast(`已切换到 ${name}`, 'success')
-    await syncRefresh()
+    await invoke('checkout_with_mode', { target, mode, isRemote })
+    const label = isRemote ? target.split('/').pop() ?? target : target
+    showToast(
+      isRemote ? `已切换到 ${label}（跟踪 ${target}）` : `已切换到 ${label}`,
+      'success',
+    )
+    selectedFile.value = null
+    selectedCommitHash.value = null
+    diffText.value = ''
+    checkoutDialog.value = null
+    await Promise.all([syncRefresh(), stashList()])
   } catch (e: any) {
     showToast(String(e))
   }
 }
 
-// Checkout remote branch as local tracking branch
-async function checkoutRemote(remote: string) {
+async function requestCheckout(target: string, isRemote: boolean) {
   try {
-    await invoke('checkout_remote_branch', { remote })
-    const local = remote.split('/').pop()
-    showToast(`已切换到 ${local}（跟踪 ${remote}）`, 'success')
-    await syncRefresh()
+    const state = await invoke<WorktreeState>('get_worktree_state')
+    if (!worktreeNeedsAction(state)) {
+      await performCheckout(target, isRemote, 'normal')
+      return
+    }
+    checkoutDialog.value = { target, isRemote, state }
   } catch (e: any) {
     showToast(String(e))
   }
+}
+
+function cancelCheckoutDialog() {
+  checkoutDialog.value = null
+}
+
+async function checkoutBranch(name: string) {
+  await requestCheckout(name, false)
+}
+
+async function checkoutRemote(remote: string) {
+  await requestCheckout(remote, true)
 }
 
 // Branch operations
@@ -760,4 +800,54 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
       @close="settingsOpen = false"
       @saved="settingsRevision++"
     />
+
+    <!-- Checkout conflict dialog -->
+    <Teleport to="body">
+      <div
+        v-if="checkoutDialog"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="cancelCheckoutDialog"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[320px]"
+          @click.stop
+        >
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">切换分支前需处理工作区</div>
+          <div class="text-[10px] text-[--text-secondary] mb-1">
+            目标：{{ checkoutDialog.isRemote ? checkoutDialog.target.split('/').pop() : checkoutDialog.target }}
+          </div>
+          <div class="text-[10px] text-[--text-secondary] mb-2.5">
+            当前有 {{ checkoutDialogSummary(checkoutDialog.state) }}
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <button
+              v-if="!checkoutDialog.state.inMerge && !checkoutDialog.state.inRebase && !checkoutDialog.state.inCherryPick"
+              class="w-full px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer text-left"
+              @click="performCheckout(checkoutDialog.target, checkoutDialog.isRemote, 'stash')"
+            >
+              Stash 并切换
+              <span class="block text-[10px] opacity-80 mt-0.5">暂存当前更改后切换分支</span>
+            </button>
+            <button
+              class="w-full px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-red-300 border border-red-800/60 hover:bg-red-900/40 transition-colors cursor-pointer text-left"
+              @click="performCheckout(checkoutDialog.target, checkoutDialog.isRemote, 'discard')"
+            >
+              丢弃更改并切换
+              <span class="block text-[10px] opacity-80 mt-0.5">
+                放弃所有本地更改
+                <template v-if="checkoutDialog.state.inMerge || checkoutDialog.state.inRebase || checkoutDialog.state.inCherryPick">
+                  ，并中止进行中的合并/Rebase
+                </template>
+              </span>
+            </button>
+            <button
+              class="w-full px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
+              @click="cancelCheckoutDialog"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 </template>

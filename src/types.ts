@@ -16,6 +16,15 @@ export interface AheadBehind {
   behind: number;
 }
 
+export interface WorktreeState {
+  hasChanges: boolean;
+  inMerge: boolean;
+  inRebase: boolean;
+  inCherryPick: boolean;
+}
+
+export type CheckoutMode = 'normal' | 'stash' | 'discard';
+
 export interface CommitLog {
   hash: string;
   author: string;
