@@ -60,3 +60,26 @@ export interface AppSettings {
     commitPrompt: string;
   };
 }
+
+export interface AiFileDiff {
+  path: string;
+  status: string;
+  diff: string;
+  truncated: boolean;
+}
+
+export interface AiOmittedFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  reason: string;
+  hint?: string;
+}
+
+export interface AiStagedDiffContext {
+  summary: string;
+  promptBody: string;
+  fileDiffs: AiFileDiff[];
+  omittedFiles: AiOmittedFile[];
+}

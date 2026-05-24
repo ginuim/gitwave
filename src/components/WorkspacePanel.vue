@@ -5,7 +5,7 @@ import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2 } from 'lucide-vue-next'
-import type { FileStatus, AppSettings, ProviderConfig, ModelConfig } from '../types'
+import type { FileStatus, AppSettings, ProviderConfig, ModelConfig, AiStagedDiffContext } from '../types'
 import { isUntrackedFile, isUntrackedPath } from '../utils/gitStatus'
 
 const props = defineProps<{
@@ -63,7 +63,6 @@ function handleCommit() {
 
 // === AI commit state ===
 const aiSettings = ref<AppSettings | null>(null)
-const stagedDiff = ref<string>('')
 const generating = ref(false)
 const aiLoading = ref(true)
 const aiError = ref<string | null>(null)
@@ -103,17 +102,6 @@ watch(() => props.repoPath, (path) => {
   }
 })
 
-// Refresh staged diff whenever the staged file list changes
-watch(
-  () => props.statuses.filter(f => f.isStaged).map(f => f.path).join('\0'),
-  async () => {
-    if (!props.repoPath || generating.value) return
-    try {
-      stagedDiff.value = await invoke<string>('get_staged_diff')
-    } catch (_) { /* silent */ }
-  },
-)
-
 async function reloadAiSettings() {
   try {
     const s = await invoke<AppSettings>('load_settings')
@@ -132,12 +120,8 @@ async function loadAiData() {
   aiLoading.value = true
   aiError.value = null
   try {
-    const [s, diff] = await Promise.all([
-      invoke<AppSettings>('load_settings'),
-      invoke<string>('get_staged_diff'),
-    ])
+    const s = await invoke<AppSettings>('load_settings')
     aiSettings.value = s
-    stagedDiff.value = diff
     if (!selectedModelId.value || !allModels.value.find(m => m.id === selectedModelId.value)) {
       const d = defaultModel.value
       if (d) selectedModelId.value = d.id
@@ -163,8 +147,9 @@ async function generateCommitMessage() {
     const model = selectedModel.value
     log(`start — model=${model.name} provider=${model.provider.type} baseUrl=${model.provider.baseUrl}`)
 
-    const prompt = buildPrompt(stagedDiff.value)
-    log(`prompt built — ${prompt.length} chars, diff=${stagedDiff.value.length} chars`)
+    const ctx = await invoke<AiStagedDiffContext>('get_staged_diff_for_ai')
+    const prompt = buildPrompt(ctx)
+    log(`prompt built — ${prompt.length} chars, summary=${ctx.summary.length} chars, diffs=${ctx.fileDiffs.length}, omitted=${ctx.omittedFiles.length}`)
 
     if (model.provider.type === 'openai') {
       await streamOpenAI(model.provider, model.name, prompt, log)
@@ -181,14 +166,11 @@ async function generateCommitMessage() {
   }
 }
 
-function buildPrompt(diff: string): string {
+function buildPrompt(ctx: AiStagedDiffContext): string {
   const prompt = commitPrompt.value || ''
   return `You are a git commit message generator.
 
-${prompt ? `## Commit Convention\n${prompt}\n\n` : ''}## Staged Changes (diff)
-\`\`\`diff
-${diff}
-\`\`\`
+${prompt ? `## Commit Convention\n${prompt}\n\n` : ''}${ctx.promptBody}
 
 Please generate a commit message for the above staged changes following the conventions described above.
 Return ONLY the commit message, nothing else.`

@@ -1454,10 +1454,420 @@ fn stash_drop(state: State<'_, AppState>, index: usize) -> Result<String, String
 
 // === AI Commit ===
 
+const AI_DIFF_BUDGET: usize = 60_000;
+const AI_DIFF_RESERVE: usize = 5_000;
+const AI_DIFF_TRUNCATE_LINES: usize = 150;
+const AI_LOCK_HINT_LINES: usize = 500;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiFileDiff {
+    pub path: String,
+    pub status: String,
+    pub diff: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiOmittedFile {
+    pub path: String,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiStagedDiffContext {
+    pub summary: String,
+    pub prompt_body: String,
+    pub file_diffs: Vec<AiFileDiff>,
+    pub omitted_files: Vec<AiOmittedFile>,
+}
+
+#[derive(Debug)]
+struct StagedFileInfo {
+    path: String,
+    status: String,
+    additions: u32,
+    deletions: u32,
+    is_binary: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FileTier {
+    Source,
+    Noise,
+    Binary,
+}
+
+fn file_tier(path: &str, is_binary: bool) -> FileTier {
+    if is_binary {
+        return FileTier::Binary;
+    }
+    if is_noise_file(path) {
+        return FileTier::Noise;
+    }
+    FileTier::Source
+}
+
+fn is_noise_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        name,
+        "package-lock.json"
+            | "yarn.lock"
+            | "pnpm-lock.yaml"
+            | "pnpm-lock.yml"
+            | "Cargo.lock"
+            | "poetry.lock"
+            | "Gemfile.lock"
+            | "composer.lock"
+            | "go.sum"
+            | "flake.lock"
+            | "Podfile.lock"
+            | "mix.lock"
+    ) || lower.ends_with(".lock")
+        || lower.contains("/node_modules/")
+        || lower.ends_with(".min.js")
+        || lower.ends_with(".min.css")
+        || lower.ends_with(".map")
+        || lower.ends_with(".snap")
+        || lower.contains("/dist/")
+        || lower.contains("/build/")
+        || lower.starts_with("dist/")
+        || lower.starts_with("build/")
+}
+
+fn parse_staged_files(repo: &str) -> Result<Vec<StagedFileInfo>, String> {
+    let name_status = run_git(repo, &["diff", "--cached", "--name-status"])?;
+    let numstat = run_git(repo, &["diff", "--cached", "--numstat"])?;
+
+    let mut stats: std::collections::HashMap<String, (u32, u32, bool)> =
+        std::collections::HashMap::new();
+    for line in numstat.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let add_s = parts.next().unwrap_or("0");
+        let del_s = parts.next().unwrap_or("0");
+        let path = parts.next().unwrap_or("").to_string();
+        if path.is_empty() {
+            continue;
+        }
+        let is_binary = add_s == "-" && del_s == "-";
+        let additions = if is_binary {
+            0
+        } else {
+            add_s.parse().unwrap_or(0)
+        };
+        let deletions = if is_binary {
+            0
+        } else {
+            del_s.parse().unwrap_or(0)
+        };
+        stats.insert(path, (additions, deletions, is_binary));
+    }
+
+    let mut files = Vec::new();
+    for line in name_status.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let status_code = parts.next().unwrap_or("").to_string();
+        if status_code.is_empty() {
+            continue;
+        }
+        let status = match status_code.chars().next() {
+            Some('A') => "Added",
+            Some('D') => "Deleted",
+            Some('M') => "Modified",
+            Some('R') => "Renamed",
+            Some('C') => "Copied",
+            Some('T') => "Type changed",
+            _ => "Changed",
+        }
+        .to_string();
+
+        let path = if status_code.starts_with('R') || status_code.starts_with('C') {
+            parts.nth(1).unwrap_or("").to_string()
+        } else {
+            parts.next().unwrap_or("").to_string()
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let (additions, deletions, is_binary) = stats
+            .get(&path)
+            .copied()
+            .unwrap_or((0, 0, false));
+        files.push(StagedFileInfo {
+            path,
+            status,
+            additions,
+            deletions,
+            is_binary,
+        });
+    }
+    Ok(files)
+}
+
+fn truncate_diff(diff: &str, max_lines: usize) -> (String, bool) {
+    let lines: Vec<&str> = diff.lines().collect();
+    if lines.len() <= max_lines {
+        return (diff.to_string(), false);
+    }
+    let omitted = lines.len() - max_lines;
+    let mut out = lines[..max_lines].join("\n");
+    out.push_str(&format!("\n... [{omitted} lines omitted] ..."));
+    (out, true)
+}
+
+fn extract_lock_hint(repo: &str, path: &str) -> Option<String> {
+    let diff = run_git_diff(repo, &["diff", "--cached", "-U0", "--", path]).ok()?;
+    let mut seen = std::collections::HashSet::new();
+    let mut packages: Vec<String> = Vec::new();
+    for line in diff.lines().take(AI_LOCK_HINT_LINES) {
+        if !(line.starts_with('+') || line.starts_with('-')) {
+            continue;
+        }
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        let content = &line[1..];
+        for segment in content.split(|c: char| !c.is_alphanumeric() && c != '@' && c != '/' && c != '-' && c != '_' && c != '.') {
+            let s = segment.trim();
+            if s.len() < 2 || s.len() > 80 {
+                continue;
+            }
+            let looks_like_pkg = s.contains('@')
+                || (s.contains('-') && !s.starts_with("node_modules"))
+                || s.starts_with("node_modules/");
+            if !looks_like_pkg {
+                continue;
+            }
+            let name = s
+                .strip_prefix("node_modules/")
+                .unwrap_or(s)
+                .split('/')
+                .next()
+                .unwrap_or(s)
+                .to_string();
+            if name.len() >= 2 && seen.insert(name.clone()) {
+                packages.push(name);
+                if packages.len() >= 12 {
+                    break;
+                }
+            }
+        }
+        if packages.len() >= 12 {
+            break;
+        }
+    }
+    if packages.is_empty() {
+        None
+    } else {
+        Some(format!("changed packages (sample): {}", packages.join(", ")))
+    }
+}
+
+fn build_ai_staged_diff_context(repo: &str) -> Result<AiStagedDiffContext, String> {
+    let files = parse_staged_files(repo)?;
+    if files.is_empty() {
+        return Ok(AiStagedDiffContext {
+            summary: "No staged changes.".to_string(),
+            prompt_body: "## Change Summary\nNo staged changes.".to_string(),
+            file_diffs: Vec::new(),
+            omitted_files: Vec::new(),
+        });
+    }
+
+    let total_add: u32 = files.iter().map(|f| f.additions).sum();
+    let total_del: u32 = files.iter().map(|f| f.deletions).sum();
+
+    let mut summary = format!(
+        "{} file(s) changed, +{} / -{} lines\n",
+        files.len(),
+        total_add,
+        total_del
+    );
+    for f in &files {
+        if f.is_binary {
+            summary.push_str(&format!("- {} {} (binary)\n", f.status, f.path));
+        } else {
+            summary.push_str(&format!(
+                "- {} {} (+{} / -{})\n",
+                f.status, f.path, f.additions, f.deletions
+            ));
+        }
+    }
+
+    let mut omitted_files: Vec<AiOmittedFile> = Vec::new();
+    let mut file_diffs: Vec<AiFileDiff> = Vec::new();
+    let mut budget = AI_DIFF_BUDGET.saturating_sub(AI_DIFF_RESERVE);
+
+    let mut source_indices: Vec<usize> = files
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| file_tier(&f.path, f.is_binary) == FileTier::Source)
+        .map(|(i, _)| i)
+        .collect();
+    source_indices.sort_by_key(|&i| files[i].additions + files[i].deletions);
+
+    for &idx in &source_indices {
+        let f = &files[idx];
+        let diff = run_git_diff(repo, &["diff", "--cached", "-U3", "--", &f.path])?;
+        if diff.trim().is_empty() {
+            continue;
+        }
+
+        if diff.len() <= budget {
+            budget = budget.saturating_sub(diff.len());
+            file_diffs.push(AiFileDiff {
+                path: f.path.clone(),
+                status: f.status.clone(),
+                diff,
+                truncated: false,
+            });
+            continue;
+        }
+
+        if budget < 400 {
+            omitted_files.push(AiOmittedFile {
+                path: f.path.clone(),
+                status: f.status.clone(),
+                additions: f.additions,
+                deletions: f.deletions,
+                reason: "budget-exhausted".to_string(),
+                hint: None,
+            });
+            continue;
+        }
+
+        let max_lines = (budget / 60).clamp(30, AI_DIFF_TRUNCATE_LINES);
+        let (truncated_diff, truncated) = truncate_diff(&diff, max_lines);
+        if truncated_diff.len() > budget {
+            omitted_files.push(AiOmittedFile {
+                path: f.path.clone(),
+                status: f.status.clone(),
+                additions: f.additions,
+                deletions: f.deletions,
+                reason: "too-large".to_string(),
+                hint: None,
+            });
+            continue;
+        }
+        budget = budget.saturating_sub(truncated_diff.len());
+        file_diffs.push(AiFileDiff {
+            path: f.path.clone(),
+            status: f.status.clone(),
+            diff: truncated_diff,
+            truncated,
+        });
+    }
+
+    for f in &files {
+        let tier = file_tier(&f.path, f.is_binary);
+        if tier == FileTier::Source {
+            let included = file_diffs.iter().any(|d| d.path == f.path);
+            let omitted = omitted_files.iter().any(|o| o.path == f.path);
+            if !included && !omitted {
+                omitted_files.push(AiOmittedFile {
+                    path: f.path.clone(),
+                    status: f.status.clone(),
+                    additions: f.additions,
+                    deletions: f.deletions,
+                    reason: "empty-diff".to_string(),
+                    hint: None,
+                });
+            }
+            continue;
+        }
+
+        let reason = match tier {
+            FileTier::Binary => "binary",
+            FileTier::Noise => "generated-or-lock",
+            FileTier::Source => unreachable!(),
+        }
+        .to_string();
+
+        let hint = if tier == FileTier::Noise && f.additions + f.deletions <= 2000 {
+            extract_lock_hint(repo, &f.path)
+        } else if tier == FileTier::Noise {
+            Some("large generated/lock file (full diff omitted)".to_string())
+        } else {
+            None
+        };
+
+        omitted_files.push(AiOmittedFile {
+            path: f.path.clone(),
+            status: f.status.clone(),
+            additions: f.additions,
+            deletions: f.deletions,
+            reason,
+            hint,
+        });
+    }
+
+    let mut prompt_body = format!("## Change Summary\n{summary}");
+    if !omitted_files.is_empty() {
+        prompt_body.push_str("\n## Omitted Files (metadata only, no full diff)\n");
+        for o in &omitted_files {
+            if o.additions == 0 && o.deletions == 0 {
+                prompt_body.push_str(&format!("- {} {} [{}]\n", o.status, o.path, o.reason));
+            } else {
+                prompt_body.push_str(&format!(
+                    "- {} {} (+{} / -{}) [{}]",
+                    o.status, o.path, o.additions, o.deletions, o.reason
+                ));
+            }
+            if let Some(h) = &o.hint {
+                prompt_body.push_str(&format!(" — {h}"));
+            }
+            prompt_body.push('\n');
+        }
+    }
+    if !file_diffs.is_empty() {
+        prompt_body.push_str("\n## Detailed Diffs (source files)\n");
+        for fd in &file_diffs {
+            prompt_body.push_str(&format!("\n### {} ({})\n", fd.path, fd.status));
+            if fd.truncated {
+                prompt_body.push_str("_Note: diff truncated due to size._\n");
+            }
+            prompt_body.push_str("```diff\n");
+            prompt_body.push_str(&fd.diff);
+            if !fd.diff.ends_with('\n') {
+                prompt_body.push('\n');
+            }
+            prompt_body.push_str("```\n");
+        }
+    }
+
+    Ok(AiStagedDiffContext {
+        summary: summary.trim_end().to_string(),
+        prompt_body,
+        file_diffs,
+        omitted_files,
+    })
+}
+
 #[tauri::command]
 fn get_staged_diff(state: State<'_, AppState>) -> Result<String, String> {
     let repo = require_repo(&state)?;
     run_git(&repo, &["diff", "--cached"])
+}
+
+#[tauri::command]
+fn get_staged_diff_for_ai(state: State<'_, AppState>) -> Result<AiStagedDiffContext, String> {
+    let repo = require_repo(&state)?;
+    build_ai_staged_diff_context(&repo)
 }
 
 // === Settings ===
@@ -1741,6 +2151,7 @@ pub fn run() {
             stash_drop,
             stash_file,
             get_staged_diff,
+            get_staged_diff_for_ai,
             clone_repository,
             get_git_config,
             set_git_config,
