@@ -887,7 +887,8 @@ fn get_branches(state: State<'_, AppState>) -> Result<Vec<BranchInfo>, String> {
 #[tauri::command]
 fn get_commit_diff(state: State<'_, AppState>, hash: String) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    run_git(&repo, &["show", &hash])
+    // Merge commits omit the patch in plain `git show`; -m --first-parent diffs vs mainline parent.
+    run_git(&repo, &["show", "-m", "--first-parent", &hash])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

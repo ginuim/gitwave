@@ -376,6 +376,8 @@ function globalClick() {
 
 interface TreeNode {
   label: string
+  /** Full branch ref for leaf nodes (e.g. feature/foo); label is the last path segment only. */
+  branchName?: string
   depth: number
   isLeaf: boolean
   isCurrent: boolean
@@ -440,6 +442,10 @@ function toggleGroup(key: string) {
   expandedGroups.value = new Set(s)
 }
 
+function branchRef(node: TreeNode): string {
+  return node.branchName ?? node.label
+}
+
 function buildTree(branches: BranchInfo[]): TreeNode[] {
   const root: Record<string, any> = {}
 
@@ -466,6 +472,7 @@ function buildTree(branches: BranchInfo[]): TreeNode[] {
         const b = val.branch as BranchInfo
         result.push({
           label: key,
+          branchName: b.name,
           depth,
           isLeaf: true,
           isCurrent: b.isCurrent,
@@ -539,6 +546,7 @@ function buildRemoteTree(branches: BranchInfo[]): TreeNode[] {
         const displayName = b.name.slice(r.length + 1) // strip "origin/"
         result.push({
           label: displayName,
+          branchName: b.name,
           depth: 1,
           isLeaf: true,
           isCurrent: b.isCurrent,
@@ -800,9 +808,9 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
               : 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]')
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
           :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
-          @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', node.label)"
+          @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', branchRef(node))"
           @click="!node.isLeaf && toggleGroup(node.key)"
-          @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, node.label, node.isCurrent)"
+          @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, branchRef(node), node.isCurrent)"
         >
           <button
             v-if="!node.isLeaf"
@@ -828,7 +836,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
             v-if="node.isLeaf"
             class="flex-shrink-0 ml-auto p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer transition-colors text-yellow-400"
             title="取消固定"
-            @click.stop="emit('unpinBranch', node.label)"
+            @click.stop="emit('unpinBranch', branchRef(node))"
           >
             <Pin :size="11" />
           </button>
@@ -850,9 +858,9 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
               : 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]')
             : 'text-[--text-secondary] hover:text-[--text-primary]'"
           :style="{ paddingLeft: (node.depth * 12 + 10) + 'px' }"
-          @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', node.label)"
+          @dblclick="node.isLeaf && !node.isCurrent && emit('checkoutBranch', branchRef(node))"
           @click="!node.isLeaf && toggleGroup(node.key)"
-          @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, node.label, node.isCurrent)"
+          @contextmenu.prevent.stop="node.isLeaf && handleContextMenu($event, branchRef(node), node.isCurrent)"
         >
           <button
             v-if="!node.isLeaf"
@@ -877,11 +885,11 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
           <button
             v-if="node.isLeaf"
             class="flex-shrink-0 ml-auto p-1 rounded hover:bg-[--bg-tertiary] cursor-pointer transition-colors"
-            :class="pinnedSet.has(node.label) ? 'text-yellow-400' : 'text-[--text-secondary] opacity-0 group-hover:opacity-60'"
-            :title="pinnedSet.has(node.label) ? '取消固定' : '固定分支'"
-            @click.stop="pinnedSet.has(node.label) ? emit('unpinBranch', node.label) : emit('pinBranch', node.label)"
+            :class="pinnedSet.has(branchRef(node)) ? 'text-yellow-400' : 'text-[--text-secondary] opacity-0 group-hover:opacity-60'"
+            :title="pinnedSet.has(branchRef(node)) ? '取消固定' : '固定分支'"
+            @click.stop="pinnedSet.has(branchRef(node)) ? emit('unpinBranch', branchRef(node)) : emit('pinBranch', branchRef(node))"
           >
-            <Pin v-if="pinnedSet.has(node.label)" :size="11" />
+            <Pin v-if="pinnedSet.has(branchRef(node))" :size="11" />
             <Pin v-else :size="11" />
           </button>
         </div>
