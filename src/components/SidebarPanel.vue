@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import {
   FolderOpen, GitBranch, Globe, Pin, PinOff,
   List, History, Loader2, ChevronRight, ChevronDown, Plus, Tag,
@@ -385,6 +385,53 @@ interface TreeNode {
 }
 
 const expandedGroups = ref<Set<string>>(new Set())
+const branchTreeEl = ref<HTMLElement | null>(null)
+
+function expandGroupsForBranch(branchName: string, isRemote: boolean) {
+  const groups = new Set(expandedGroups.value)
+  if (isRemote) {
+    sidebarRemoteExpanded.value = true
+    const slashIdx = branchName.indexOf('/')
+    if (slashIdx > 0) {
+      groups.add(branchName.slice(0, slashIdx + 1))
+    }
+  } else {
+    const parts = branchName.split('/')
+    let prefix = ''
+    for (let i = 0; i < parts.length - 1; i++) {
+      prefix += parts[i] + '/'
+      groups.add(prefix)
+    }
+  }
+  expandedGroups.value = groups
+}
+
+function scrollCurrentBranchIntoView() {
+  nextTick(() => {
+    branchTreeEl.value
+      ?.querySelector('[data-current-branch]')
+      ?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+watch(
+  () => props.repoPath,
+  () => {
+    expandedGroups.value = new Set()
+    sidebarRemoteExpanded.value = false
+  },
+)
+
+watch(
+  () => props.branches,
+  (branches) => {
+    const current = branches.find(b => b.isCurrent)
+    if (!current) return
+    expandGroupsForBranch(current.name, current.isRemote)
+    scrollCurrentBranchIntoView()
+  },
+  { immediate: true },
+)
 
 function toggleGroup(key: string) {
   const s = expandedGroups.value
@@ -734,7 +781,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
     </div>
 
     <!-- Branch tree -->
-    <div class="flex-1 overflow-y-auto px-2.5 pb-2.5 pt-1">
+    <div ref="branchTreeEl" class="flex-1 overflow-y-auto px-2.5 pb-2.5 pt-1">
 
       <template v-if="branches.length > 0">
         <!-- Pinned branches -->
@@ -745,6 +792,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
         <div
           v-for="node in pinnedLocalBranches"
           :key="'p-'+node.key"
+          :data-current-branch="node.isLeaf && node.isCurrent ? '' : undefined"
           class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
           :class="node.isLeaf
             ? (node.isCurrent
@@ -794,6 +842,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
         <div
           v-for="node in regularLocalBranches"
           :key="node.key"
+          :data-current-branch="node.isLeaf && node.isCurrent ? '' : undefined"
           class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
           :class="node.isLeaf
             ? (node.isCurrent
@@ -852,6 +901,7 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
             <div
               v-for="node in remoteBranches"
               :key="node.key"
+              :data-current-branch="node.isLeaf && node.isCurrent ? '' : undefined"
               class="flex items-center gap-0.5 rounded text-xs leading-snug py-1 pr-2 group"
               :class="node.isLeaf
                 ? 'text-[--text-secondary] cursor-pointer hover:text-[--text-primary]'
