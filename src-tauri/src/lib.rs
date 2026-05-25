@@ -1751,6 +1751,7 @@ pub struct AiOmittedFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiStagedDiffContext {
+    pub current_branch: String,
     pub summary: String,
     pub prompt_body: String,
     pub file_diffs: Vec<AiFileDiff>,
@@ -1946,12 +1947,22 @@ fn extract_lock_hint(repo: &str, path: &str) -> Option<String> {
     }
 }
 
+fn current_branch_name(repo: &str) -> String {
+    run_git(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
 fn build_ai_staged_diff_context(repo: &str) -> Result<AiStagedDiffContext, String> {
+    let current_branch = current_branch_name(repo);
     let files = parse_staged_files(repo)?;
     if files.is_empty() {
         return Ok(AiStagedDiffContext {
+            current_branch: current_branch.clone(),
             summary: "No staged changes.".to_string(),
-            prompt_body: "## Change Summary\nNo staged changes.".to_string(),
+            prompt_body: format!(
+                "## Current Branch\n{current_branch}\n\n## Change Summary\nNo staged changes."
+            ),
             file_diffs: Vec::new(),
             omitted_files: Vec::new(),
         });
@@ -2084,7 +2095,7 @@ fn build_ai_staged_diff_context(repo: &str) -> Result<AiStagedDiffContext, Strin
         });
     }
 
-    let mut prompt_body = format!("## Change Summary\n{summary}");
+    let mut prompt_body = format!("## Current Branch\n{current_branch}\n\n## Change Summary\n{summary}");
     if !omitted_files.is_empty() {
         prompt_body.push_str("\n## Omitted Files (metadata only, no full diff)\n");
         for o in &omitted_files {
@@ -2119,6 +2130,7 @@ fn build_ai_staged_diff_context(repo: &str) -> Result<AiStagedDiffContext, Strin
     }
 
     Ok(AiStagedDiffContext {
+        current_branch,
         summary: summary.trim_end().to_string(),
         prompt_body,
         file_diffs,

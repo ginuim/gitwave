@@ -101,6 +101,7 @@ export interface AiOmittedFile {
 }
 
 export interface AiStagedDiffContext {
+  currentBranch: string;
   summary: string;
   promptBody: string;
   fileDiffs: AiFileDiff[];

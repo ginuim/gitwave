@@ -152,7 +152,7 @@ async function generateCommitMessage() {
 
     const ctx = await invoke<AiStagedDiffContext>('get_staged_diff_for_ai')
     const prompt = buildPrompt(ctx)
-    log(`prompt built — ${prompt.length} chars, summary=${ctx.summary.length} chars, diffs=${ctx.fileDiffs.length}, omitted=${ctx.omittedFiles.length}`)
+    log(`prompt built — ${prompt.length} chars, branch=${ctx.currentBranch}, summary=${ctx.summary.length} chars, diffs=${ctx.fileDiffs.length}, omitted=${ctx.omittedFiles.length}`)
 
     if (model.provider.type === 'openai') {
       await streamOpenAI(model.provider, model.name, prompt, log)
