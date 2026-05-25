@@ -27,6 +27,17 @@ export interface GraphPath {
   color: string
   fromHash: string
   toHash: string
+  fromColumn: number
+  toColumn: number
+  fromRow: number
+  toRow: number
+}
+
+export interface GraphLane {
+  id: string
+  column: number
+  label: string
+  color: string
 }
 
 export interface CommitGraphLayout {
@@ -34,6 +45,7 @@ export interface CommitGraphLayout {
   paths: GraphPath[]
   laneCount: number
   height: number
+  columnByHash: Map<string, number>
 }
 
 function laneX(column: number): number {
@@ -100,9 +112,99 @@ export function isPathHighlighted(path: GraphPath, focus: Set<string> | null): b
   return focus.has(path.fromHash) && focus.has(path.toHash)
 }
 
+function pickBestRef(refs: Iterable<string>): string | null {
+  const list = [...refs].sort()
+  if (list.length === 0) return null
+  const local = list.find((ref) => !ref.startsWith('origin/') && !ref.startsWith('remotes/'))
+  if (local) return local
+  return list[0].replace(/^origin\//, '').replace(/^remotes\//, '')
+}
+
+function laneLabel(column: number, refs: Set<string>): string {
+  const named = pickBestRef(refs)
+  if (named) return named
+  return column === 0 ? '主线' : `分支 ${column}`
+}
+
+function laneId(column: number, label: string): string {
+  if (label !== '主线' && !label.startsWith('分支 ')) {
+    return `ref:${label}`
+  }
+  return `col:${column}:${label}`
+}
+
+export function buildGraphLanes(commits: CommitLog[], layout: CommitGraphLayout): GraphLane[] {
+  const refsByColumn = new Map<number, Set<string>>()
+  const colorByColumn = new Map<number, string>()
+
+  for (const node of layout.nodes) {
+    colorByColumn.set(node.column, node.color)
+    const commit = commits.find((item) => item.hash === node.hash)
+    if (!commit) continue
+    const refs = refsByColumn.get(node.column) ?? new Set<string>()
+    for (const ref of commit.refs) refs.add(ref)
+    refsByColumn.set(node.column, refs)
+  }
+
+  const columns = [...new Set(layout.nodes.map((node) => node.column))].sort((a, b) => a - b)
+  return columns.map((column) => {
+    const label = laneLabel(column, refsByColumn.get(column) ?? new Set())
+    return {
+      id: laneId(column, label),
+      column,
+      label,
+      color: colorByColumn.get(column) ?? MAIN_LANE_COLOR,
+    }
+  })
+}
+
+export function syncVisibleLaneIds(
+  lanes: GraphLane[],
+  visibleLaneIds: Set<string>,
+  knownLaneIds: Set<string>,
+): { visibleLaneIds: Set<string>; knownLaneIds: Set<string> } {
+  const present = new Set(lanes.map((lane) => lane.id))
+  const nextVisible = new Set([...visibleLaneIds].filter((id) => present.has(id)))
+  const nextKnown = new Set(knownLaneIds)
+
+  for (const lane of lanes) {
+    if (!nextKnown.has(lane.id)) {
+      nextKnown.add(lane.id)
+      nextVisible.add(lane.id)
+    }
+  }
+
+  if (nextVisible.size === 0) {
+    for (const lane of lanes) nextVisible.add(lane.id)
+  }
+
+  return { visibleLaneIds: nextVisible, knownLaneIds: nextKnown }
+}
+
+export function visibleColumnsFromLanes(lanes: GraphLane[], visibleLaneIds: Set<string>): Set<number> {
+  return new Set(
+    lanes.filter((lane) => visibleLaneIds.has(lane.id)).map((lane) => lane.column),
+  )
+}
+
+export function filterCommitsByColumns(
+  commits: CommitLog[],
+  layout: CommitGraphLayout,
+  visibleColumns: Set<number>,
+): CommitLog[] {
+  if (visibleColumns.size === 0) return commits
+  return commits.filter((commit) => visibleColumns.has(layout.columnByHash.get(commit.hash) ?? 0))
+}
+
 export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
   if (commits.length === 0) {
-    return { nodes: [], paths: [], laneCount: 1, height: 0 }
+    return {
+      nodes: [],
+      paths: [],
+      laneCount: 1,
+      height: 0,
+      columnByHash: new Map(),
+    }
   }
 
   const hashToRow = new Map<string, number>()
@@ -175,6 +277,10 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
           color: parentColor,
           fromHash: commit.hash,
           toHash: parentHash,
+          fromColumn: column,
+          toColumn: parentColumn,
+          fromRow: row,
+          toRow: parentRow,
         })
       } else {
         const branchY = y1 + GRAPH_ROW_HEIGHT / 2
@@ -183,16 +289,24 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
           color: parentColor,
           fromHash: commit.hash,
           toHash: parentHash,
+          fromColumn: column,
+          toColumn: parentColumn,
+          fromRow: row,
+          toRow: parentRow,
         })
       }
     }
   }
+
+  const columnByHash = new Map<string, number>()
+  for (const node of nodes) columnByHash.set(node.hash, node.column)
 
   return {
     nodes,
     paths,
     laneCount: Math.max(maxColumns, 1),
     height: commits.length * GRAPH_ROW_HEIGHT,
+    columnByHash,
   }
 }
 

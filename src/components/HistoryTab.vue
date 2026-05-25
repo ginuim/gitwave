@@ -105,7 +105,7 @@ function onScroll(event: Event) {
       v-if="viewMode === 'graph' && logs.length > 0"
       class="px-2.5 py-1.5 text-[10px] leading-relaxed text-[--text-secondary] border-b border-[--border-color] bg-[--bg-secondary]"
     >
-      竖线表示提交链，线条汇合为合并。悬停或选中某条提交可高亮其上下游路径。
+      竖线表示提交链，线条汇合为合并。悬停可高亮路径；多泳道时可在右上角筛选。
     </div>
 
     <div v-if="loading && logs.length === 0" class="flex items-center justify-center py-2.5 text-[--text-secondary]">
