@@ -29,6 +29,13 @@ pub struct BranchInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BranchTip {
+    pub name: String,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommitLog {
     pub hash: String,
     pub parents: Vec<String>,
@@ -978,6 +985,37 @@ fn get_branches(state: State<'_, AppState>) -> Result<Vec<BranchInfo>, String> {
     let repo = require_repo(&state)?;
     let raw = run_git(&repo, &["branch", "-a"])?;
     Ok(parse_branches(&raw))
+}
+
+#[tauri::command]
+fn get_branch_tips(state: State<'_, AppState>) -> Result<Vec<BranchTip>, String> {
+    let repo = require_repo(&state)?;
+    let raw = run_git(
+        &repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%00%(objectname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let mut tips = Vec::new();
+    for line in raw.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\0');
+        let name = parts.next().unwrap_or("").trim().to_string();
+        let hash = parts.next().unwrap_or("").trim().to_string();
+        if name.is_empty() || hash.is_empty() {
+            continue;
+        }
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        tips.push(BranchTip { name, hash });
+    }
+    Ok(tips)
 }
 
 #[tauri::command]
@@ -2355,6 +2393,7 @@ pub fn run() {
             get_file_diff,
             get_git_log,
             get_branches,
+            get_branch_tips,
             get_commit_diff,
             get_binary_image_preview,
             stage_patch,

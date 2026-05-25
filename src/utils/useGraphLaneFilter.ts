@@ -1,5 +1,5 @@
 import { computed, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
-import type { CommitLog } from '../types'
+import type { BranchTip, CommitLog } from '../types'
 import {
   layoutCommitGraph,
   buildGraphLanes,
@@ -8,12 +8,31 @@ import {
   filterCommitsByColumns,
 } from './commitGraph'
 
-export function useGraphLaneFilter(logs: MaybeRefOrGetter<CommitLog[]>) {
+function branchTipsByHash(tips: BranchTip[]): Map<string, string[]> {
+  const map = new Map<string, string[]>()
+  for (const tip of tips) {
+    const names = map.get(tip.hash) ?? []
+    names.push(tip.name)
+    map.set(tip.hash, names)
+  }
+  return map
+}
+
+export function useGraphLaneFilter(
+  logs: MaybeRefOrGetter<CommitLog[]>,
+  branchTips?: MaybeRefOrGetter<BranchTip[]>,
+) {
   const visibleLaneIds = ref<string[]>([])
   const knownLaneIds = ref<string[]>([])
 
   const fullLayout = computed(() => layoutCommitGraph(toValue(logs)))
-  const lanes = computed(() => buildGraphLanes(toValue(logs), fullLayout.value))
+  const lanes = computed(() =>
+    buildGraphLanes(
+      toValue(logs),
+      fullLayout.value,
+      branchTipsByHash(toValue(branchTips) ?? []),
+    ),
+  )
 
   watch(lanes, (nextLanes) => {
     const synced = syncVisibleLaneIds(nextLanes, visibleLaneIds.value, knownLaneIds.value)

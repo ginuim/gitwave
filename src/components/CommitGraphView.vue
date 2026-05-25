@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { User, CalendarDays, Hash, GitMerge } from 'lucide-vue-next'
-import type { CommitLog } from '../types'
+import type { BranchTip, CommitLog } from '../types'
 import {
   layoutCommitGraph,
   collectRelatedHashes,
@@ -9,6 +9,8 @@ import {
   isMergeCommit,
   shortHash,
   formatCommitDate,
+  buildGraphLanes,
+  laneForColumn,
   GRAPH_ROW_HEIGHT,
   GRAPH_LANE_WIDTH,
   GRAPH_NODE_RADIUS,
@@ -18,6 +20,7 @@ import {
 
 const props = defineProps<{
   logs: CommitLog[]
+  branchTips: BranchTip[]
   selectedHash: string | null
 }>()
 
@@ -27,13 +30,29 @@ const emit = defineEmits<{
 }>()
 
 const hoveredHash = ref<string | null>(null)
+const hoveredLaneColumn = ref<number | null>(null)
 
 const layout = computed(() => layoutCommitGraph(props.logs))
 const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 12)
+const displayLanes = computed(() => {
+  const tipsByHash = new Map<string, string[]>()
+  for (const tip of props.branchTips) {
+    const names = tipsByHash.get(tip.hash) ?? []
+    names.push(tip.name)
+    tipsByHash.set(tip.hash, names)
+  }
+  return buildGraphLanes(props.logs, layout.value, tipsByHash)
+})
 
 const focusHash = computed(() => hoveredHash.value ?? props.selectedHash)
 const focusSet = computed(() => collectRelatedHashes(focusHash.value, props.logs))
 const hasFocus = computed(() => focusSet.value !== null)
+
+const hoveredLaneLabel = computed(() => {
+  if (hoveredLaneColumn.value === null) return null
+  return laneForColumn(displayLanes.value, hoveredLaneColumn.value)?.label
+    ?? (hoveredLaneColumn.value === 0 ? '主线' : `分支 ${hoveredLaneColumn.value}`)
+})
 
 watch(() => props.logs, (commits) => {
   if (hoveredHash.value && !commits.some((commit) => commit.hash === hoveredHash.value)) {
@@ -65,6 +84,35 @@ function onRowEnter(hash: string) {
   hoveredHash.value = hash
   emit('commitHover', { hash, commits: props.logs })
 }
+
+function clearHover() {
+  hoveredHash.value = null
+  hoveredLaneColumn.value = null
+}
+
+function onLaneEnter(column: number) {
+  hoveredLaneColumn.value = column
+}
+
+function onLaneLeave() {
+  hoveredLaneColumn.value = null
+}
+
+function onGraphClick(event: MouseEvent) {
+  const row = Math.floor(event.offsetY / GRAPH_ROW_HEIGHT)
+  const log = props.logs[row]
+  if (log) emit('selectCommit', log.hash)
+}
+
+function onGraphMouseMove(event: MouseEvent) {
+  const row = Math.floor(event.offsetY / GRAPH_ROW_HEIGHT)
+  const log = props.logs[row]
+  if (log && log.hash !== hoveredHash.value) {
+    onRowEnter(log.hash)
+  }
+}
+
+defineExpose({ clearHover })
 </script>
 
 <template>
@@ -75,7 +123,7 @@ function onRowEnter(hash: string) {
     当前泳道筛选下没有提交，请勾选更多泳道
   </div>
 
-  <div v-else class="relative" :style="{ height: `${layout.height}px` }">
+  <div v-else class="relative" :style="{ height: `${layout.height}px` }" @mouseleave="clearHover">
     <svg
       class="absolute top-0 left-0 pointer-events-none z-[1]"
       :width="graphWidth"
@@ -110,7 +158,7 @@ function onRowEnter(hash: string) {
     <div
       v-for="(log, row) in logs"
       :key="log.hash"
-      class="absolute left-0 right-0 flex items-stretch border-b border-[--border-color] cursor-pointer"
+      class="absolute left-0 right-0 z-[2] flex items-stretch border-b border-[--border-color] cursor-pointer"
       :style="{ top: `${row * GRAPH_ROW_HEIGHT}px`, height: `${GRAPH_ROW_HEIGHT}px` }"
       @mouseenter="onRowEnter(log.hash)"
       @click="emit('selectCommit', log.hash)"
@@ -155,6 +203,34 @@ function onRowEnter(hash: string) {
           </span>
         </div>
       </div>
+    </div>
+
+    <div
+      class="absolute top-0 left-0 z-[3] flex h-full cursor-pointer"
+      :style="{ width: `${graphWidth}px` }"
+      @click="onGraphClick"
+      @mousemove="onGraphMouseMove"
+    >
+      <div
+        v-for="column in layout.laneCount"
+        :key="`lane-hit-${column - 1}`"
+        class="h-full"
+        :style="{ width: `${GRAPH_LANE_WIDTH}px` }"
+        @mouseenter="onLaneEnter(column - 1)"
+        @mouseleave="onLaneLeave"
+      />
+    </div>
+
+    <div
+      v-if="hoveredLaneLabel"
+      class="absolute z-[4] pointer-events-none max-w-[220px] px-2 py-1 rounded-[var(--radius)] text-[10px] leading-snug text-[--text-primary] bg-[--bg-tertiary] border border-[--border-color] shadow-md truncate"
+      :style="{
+        left: `${(hoveredLaneColumn ?? 0) * GRAPH_LANE_WIDTH + GRAPH_LANE_WIDTH / 2}px`,
+        top: '6px',
+        transform: 'translateX(-50%)',
+      }"
+    >
+      {{ hoveredLaneLabel }}
     </div>
   </div>
 </template>

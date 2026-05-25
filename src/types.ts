@@ -11,6 +11,11 @@ export interface BranchInfo {
   isHead: boolean;
 }
 
+export interface BranchTip {
+  name: string;
+  hash: string;
+}
+
 export interface AheadBehind {
   ahead: number;
   behind: number;

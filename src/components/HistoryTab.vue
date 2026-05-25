@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, toRef, watch } from 'vue'
 import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge, Volume2, VolumeX } from 'lucide-vue-next'
-import type { CommitLog } from '../types'
+import type { BranchTip, CommitLog } from '../types'
 import CommitGraphView from './CommitGraphView.vue'
 import GraphLaneFilter from './GraphLaneFilter.vue'
 import {
@@ -21,6 +21,7 @@ const props = defineProps<{
   selectedHash: string | null
   filter: 'current' | 'all'
   currentBranch: string
+  branchTips: BranchTip[]
 }>()
 
 const emit = defineEmits<{
@@ -41,7 +42,7 @@ const {
   toggleLane,
   showAllLanes,
   showMainLaneOnly,
-} = useGraphLaneFilter(toRef(props, 'logs'))
+} = useGraphLaneFilter(toRef(props, 'logs'), toRef(props, 'branchTips'))
 
 function readStoredViewMode(): 'list' | 'graph' {
   try {
@@ -54,6 +55,7 @@ function readStoredViewMode(): 'list' | 'graph' {
 
 const viewMode = ref<'list' | 'graph'>(readStoredViewMode())
 const scrollRoot = ref<HTMLElement | null>(null)
+const graphViewRef = ref<{ clearHover: () => void } | null>(null)
 
 watch(viewMode, (mode) => {
   try {
@@ -68,6 +70,11 @@ function onScroll(event: Event) {
   if (target.scrollTop + target.clientHeight >= target.scrollHeight - 120) {
     emit('loadMore')
   }
+}
+
+function handleHoverAreaLeave() {
+  onHoverAreaLeave()
+  graphViewRef.value?.clearHover()
 }
 </script>
 
@@ -159,7 +166,7 @@ function onScroll(event: Event) {
       ref="scrollRoot"
       class="flex-1 min-h-0 overflow-y-auto overflow-x-auto"
       @scroll="onScroll"
-      @mouseleave="onHoverAreaLeave"
+      @mouseleave="handleHoverAreaLeave"
     >
       <div v-if="viewMode === 'list'" key="history-list">
         <div
@@ -204,8 +211,10 @@ function onScroll(event: Event) {
 
       <CommitGraphView
         v-else
+        ref="graphViewRef"
         key="history-graph"
         :logs="displayCommits"
+        :branch-tips="branchTips"
         :selected-hash="selectedHash"
         @select-commit="emit('selectCommit', $event)"
         @commit-hover="onCommitHover($event.hash, $event.commits)"

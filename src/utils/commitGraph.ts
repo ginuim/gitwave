@@ -120,39 +120,123 @@ function pickBestRef(refs: Iterable<string>): string | null {
   return list[0].replace(/^origin\//, '').replace(/^remotes\//, '')
 }
 
-function laneLabel(column: number, refs: Set<string>): string {
+function collectColumnLaneHashes(
+  commits: CommitLog[],
+  layout: CommitGraphLayout,
+  column: number,
+): Set<string> {
+  const columnByHash = layout.columnByHash
+  const known = new Set(commits.map((commit) => commit.hash))
+  const queue = commits
+    .filter((commit) => (columnByHash[commit.hash] ?? 0) === column)
+    .map((commit) => commit.hash)
+  const connected = new Set<string>()
+
+  while (queue.length > 0) {
+    const hash = queue.pop()!
+    if (connected.has(hash) || !known.has(hash)) continue
+    connected.add(hash)
+
+    const commit = commits.find((item) => item.hash === hash)
+    if (!commit) continue
+
+    for (const parentHash of commit.parents) {
+      if ((columnByHash[parentHash] ?? -1) === column && known.has(parentHash)) {
+        queue.push(parentHash)
+      }
+    }
+
+    for (const other of commits) {
+      if ((columnByHash[other.hash] ?? -1) !== column) continue
+      if (other.parents.includes(hash)) {
+        queue.push(other.hash)
+      }
+    }
+  }
+
+  return connected
+}
+
+function collectColumnRefs(
+  commits: CommitLog[],
+  layout: CommitGraphLayout,
+  column: number,
+  branchTipsByHash?: Map<string, string[]>,
+): Set<string> {
+  const refs = new Set<string>()
+
+  for (const hash of collectColumnLaneHashes(commits, layout, column)) {
+    const commit = commits.find((item) => item.hash === hash)
+    if (!commit) continue
+    for (const ref of commit.refs) refs.add(ref)
+    for (const name of branchTipsByHash?.get(hash) ?? []) refs.add(name)
+  }
+
+  return refs
+}
+
+function laneTipCommit(
+  commits: CommitLog[],
+  layout: CommitGraphLayout,
+  column: number,
+): CommitLog | null {
+  const hashes = collectColumnLaneHashes(commits, layout, column)
+  let best: CommitLog | null = null
+  let bestRow = Infinity
+
+  for (const node of layout.nodes) {
+    if (!hashes.has(node.hash) || node.row >= bestRow) continue
+    bestRow = node.row
+    best = commits.find((commit) => commit.hash === node.hash) ?? null
+  }
+
+  return best
+}
+
+function laneLabel(
+  column: number,
+  refs: Set<string>,
+  tipCommit: CommitLog | null,
+): string {
   const named = pickBestRef(refs)
   if (named) return named
-  return column === 0 ? '主线' : `分支 ${column}`
-}
+  if (column === 0) return '主线'
 
-function laneId(column: number, label: string): string {
-  if (label !== '主线' && !label.startsWith('分支 ')) {
-    return `ref:${label}`
+  const subject = tipCommit?.message.split('\n')[0]?.trim() ?? ''
+  if (subject) {
+    return subject.length > 32 ? `${subject.slice(0, 32)}…` : subject
   }
-  return `col:${column}:${label}`
+
+  return `分支 ${column}`
 }
 
-export function buildGraphLanes(commits: CommitLog[], layout: CommitGraphLayout): GraphLane[] {
-  const refsByColumn = new Map<number, Set<string>>()
+function laneId(column: number): string {
+  return `col:${column}`
+}
+
+export function laneForColumn(lanes: GraphLane[], column: number): GraphLane | undefined {
+  return lanes.find((lane) => lane.column === column)
+}
+
+export function buildGraphLanes(
+  commits: CommitLog[],
+  layout: CommitGraphLayout,
+  branchTipsByHash?: Map<string, string[]>,
+): GraphLane[] {
   const colorByColumn = new Map<number, string>()
 
   for (const node of layout.nodes) {
     colorByColumn.set(node.column, node.color)
-    const commit = commits.find((item) => item.hash === node.hash)
-    if (!commit) continue
-    const refs = refsByColumn.get(node.column) ?? new Set<string>()
-    for (const ref of commit.refs) refs.add(ref)
-    refsByColumn.set(node.column, refs)
   }
 
   const columns = [...new Set(layout.nodes.map((node) => node.column))].sort((a, b) => a - b)
   return columns.map((column) => {
-    const label = laneLabel(column, refsByColumn.get(column) ?? new Set())
+    const refs = collectColumnRefs(commits, layout, column, branchTipsByHash)
+    const tipCommit = laneTipCommit(commits, layout, column)
     return {
-      id: laneId(column, label),
+      id: laneId(column),
       column,
-      label,
+      label: laneLabel(column, refs, tipCommit),
       color: colorByColumn.get(column) ?? MAIN_LANE_COLOR,
     }
   })

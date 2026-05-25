@@ -10,7 +10,7 @@ import HistoryTab from './components/HistoryTab.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
-import type { FileStatus, CommitLog, CommitLogPage, BranchInfo, AheadBehind, WorktreeState, CheckoutMode, SubtreeInfo } from './types'
+import type { FileStatus, CommitLog, CommitLogPage, BranchInfo, BranchTip, AheadBehind, WorktreeState, CheckoutMode, SubtreeInfo } from './types'
 import { isUntrackedPath } from './utils/gitStatus'
 
 // State
@@ -36,6 +36,7 @@ const selectedFileUntracked = computed(
 )
 
 const branches = ref<BranchInfo[]>([])
+const branchTips = ref<BranchTip[]>([])
 const branchesLoading = ref(false)
 const recentRepos = ref<string[]>([])
 const pinnedBranches = ref<string[]>([])
@@ -136,6 +137,7 @@ async function refreshBranches() {
   branchesLoading.value = true
   try {
     branches.value = await invoke<BranchInfo[]>('get_branches')
+    branchTips.value = await invoke<BranchTip[]>('get_branch_tips')
   } catch (e: any) {
     showToast(String(e))
   } finally {
@@ -837,6 +839,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :selected-hash="selectedCommitHash"
         :filter="historyFilter"
         :current-branch="currentBranch"
+        :branch-tips="branchTips"
         @select-commit="selectCommit"
         @update-filter="historyFilter = $event; refreshHistory()"
         @load-more="loadMoreHistory"
