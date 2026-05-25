@@ -51,7 +51,7 @@ jobs:
       - name: Upload bundles as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tauri-bundle-windows
+          name: gitwave-windows
           path: |
             src-tauri/target/**/bundle/**/*.exe
           if-no-files-found: warn
