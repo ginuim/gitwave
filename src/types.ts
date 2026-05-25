@@ -38,9 +38,16 @@ export type CheckoutMode = 'normal' | 'stash' | 'discard';
 
 export interface CommitLog {
   hash: string;
+  parents: string[];
+  refs: string[];
   author: string;
   date: string;
   message: string;
+}
+
+export interface CommitLogPage {
+  commits: CommitLog[];
+  hasMore: boolean;
 }
 
 // Settings types (shared between SettingsDialog and WorkspacePanel)

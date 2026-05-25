@@ -10,7 +10,7 @@ import HistoryTab from './components/HistoryTab.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
-import type { FileStatus, CommitLog, BranchInfo, AheadBehind, WorktreeState, CheckoutMode, SubtreeInfo } from './types'
+import type { FileStatus, CommitLog, CommitLogPage, BranchInfo, AheadBehind, WorktreeState, CheckoutMode, SubtreeInfo } from './types'
 import { isUntrackedPath } from './utils/gitStatus'
 
 // State
@@ -54,6 +54,9 @@ const currentBranch = computed(() => branches.value.find(b => b.isCurrent)?.name
 const statusLoading = ref(false)
 const commitLoading = ref(false)
 const historyLoading = ref(false)
+const historyLoadingMore = ref(false)
+const historyHasMore = ref(false)
+const HISTORY_PAGE_SIZE = 50
 const pushLoading = ref(false)
 const pullLoading = ref(false)
 const aheadBehind = ref<AheadBehind>({ ahead: 0, behind: 0 })
@@ -686,15 +689,39 @@ async function stashDrop(index: number) {
 
 
 // History
+async function fetchHistoryPage(skip: number): Promise<CommitLogPage> {
+  return invoke<CommitLogPage>('get_git_log', {
+    all: historyFilter.value === 'all',
+    skip,
+    limit: HISTORY_PAGE_SIZE,
+  })
+}
+
 async function refreshHistory() {
   if (!repoPath.value) return
   historyLoading.value = true
   try {
-    commitLogs.value = await invoke<CommitLog[]>('get_git_log', { all: historyFilter.value === 'all' })
+    const page = await fetchHistoryPage(0)
+    commitLogs.value = page.commits
+    historyHasMore.value = page.hasMore
   } catch (e: any) {
     showToast(String(e))
   } finally {
     historyLoading.value = false
+  }
+}
+
+async function loadMoreHistory() {
+  if (!repoPath.value || !historyHasMore.value || historyLoadingMore.value || historyLoading.value) return
+  historyLoadingMore.value = true
+  try {
+    const page = await fetchHistoryPage(commitLogs.value.length)
+    commitLogs.value = [...commitLogs.value, ...page.commits]
+    historyHasMore.value = page.hasMore
+  } catch (e: any) {
+    showToast(String(e))
+  } finally {
+    historyLoadingMore.value = false
   }
 }
 
@@ -805,11 +832,14 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         v-if="activeTab === 'history'"
         :logs="commitLogs"
         :loading="historyLoading"
+        :loading-more="historyLoadingMore"
+        :has-more="historyHasMore"
         :selected-hash="selectedCommitHash"
         :filter="historyFilter"
         :current-branch="currentBranch"
         @select-commit="selectCommit"
         @update-filter="historyFilter = $event; refreshHistory()"
+        @load-more="loadMoreHistory"
       />
     </Pane>
 

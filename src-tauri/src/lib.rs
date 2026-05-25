@@ -31,9 +31,52 @@ pub struct BranchInfo {
 #[serde(rename_all = "camelCase")]
 pub struct CommitLog {
     pub hash: String,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
     pub author: String,
     pub date: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitLogPage {
+    pub commits: Vec<CommitLog>,
+    pub has_more: bool,
+}
+
+fn parse_commit_refs(decorations: &str) -> Vec<String> {
+    let trimmed = decorations.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    trimmed
+        .split(", ")
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return None;
+            }
+            if let Some(tag) = part.strip_prefix("tag: ") {
+                return Some(tag.to_string());
+            }
+            if let Some((_head, branch)) = part.split_once(" -> ") {
+                return Some(branch.trim().to_string());
+            }
+            Some(part.to_string())
+        })
+        .collect()
+}
+
+fn parse_commit_parents(parents: &str) -> Vec<String> {
+    let trimmed = parents.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    trimmed
+        .split_whitespace()
+        .map(|hash| hash.to_string())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -880,33 +923,54 @@ fn get_file_diff(state: State<'_, AppState>, path: String, is_staged: bool) -> R
 }
 
 #[tauri::command]
-fn get_git_log(state: State<'_, AppState>, all: Option<bool>) -> Result<Vec<CommitLog>, String> {
+fn get_git_log(
+    state: State<'_, AppState>,
+    all: Option<bool>,
+    skip: Option<usize>,
+    limit: Option<usize>,
+) -> Result<CommitLogPage, String> {
     let repo = require_repo(&state)?;
-    let format_str = "%h|%an|%ad|%s";
+    let skip = skip.unwrap_or(0);
+    let limit = limit.unwrap_or(50).max(1);
+    let fetch = limit.saturating_add(1);
+    let format_str = "%H%x00%P%x00%D%x00%an%x00%ad%x00%s";
     let pretty = format!("--pretty=format:{format_str}");
-    let mut args = vec!["log", "-n", "50", &pretty, "--date=iso"];
+    let skip_arg = format!("--skip={skip}");
+    let limit_arg = format!("-n{fetch}");
+    let mut args = vec!["log", &skip_arg, &limit_arg, &pretty, "--date=iso"];
     if all.unwrap_or(false) {
         args.push("--all");
     }
     let raw = run_git(&repo, &args)?;
     let mut logs = Vec::new();
-    for line in raw.lines() {
+    for line in raw.split('\n') {
         if line.is_empty() {
             continue;
         }
-        let mut parts = line.splitn(4, '|');
+        let mut parts = line.split('\0');
         let hash = parts.next().unwrap_or("").to_string();
+        let parents = parse_commit_parents(parts.next().unwrap_or(""));
+        let refs = parse_commit_refs(parts.next().unwrap_or(""));
         let author = parts.next().unwrap_or("").to_string();
         let date = parts.next().unwrap_or("").to_string();
         let message = parts.next().unwrap_or("").to_string();
         logs.push(CommitLog {
             hash,
+            parents,
+            refs,
             author,
             date,
             message,
         });
     }
-    Ok(logs)
+    let has_more = logs.len() > limit;
+    if has_more {
+        logs.truncate(limit);
+    }
+    Ok(CommitLogPage {
+        commits: logs,
+        has_more,
+    })
 }
 
 #[tauri::command]
