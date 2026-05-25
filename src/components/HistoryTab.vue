@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge } from 'lucide-vue-next'
+import { ref, toRef, watch } from 'vue'
+import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge, Volume2, VolumeX } from 'lucide-vue-next'
 import type { CommitLog } from '../types'
 import CommitGraphView from './CommitGraphView.vue'
+import GraphLaneFilter from './GraphLaneFilter.vue'
 import {
   shortHash,
   formatCommitDate,
   isMergeCommit,
   HISTORY_VIEW_STORAGE_KEY,
 } from '../utils/commitGraph'
+import { useLaneHoverSound } from '../utils/useLaneHoverSound'
+import { useGraphLaneFilter } from '../utils/useGraphLaneFilter'
 
-defineProps<{
+const props = defineProps<{
   logs: CommitLog[]
   loading: boolean
   loadingMore: boolean
@@ -25,6 +28,20 @@ const emit = defineEmits<{
   updateFilter: [filter: 'current' | 'all']
   loadMore: []
 }>()
+
+const { hoverSoundEnabled, toggleHoverSound, onCommitHover, onHoverAreaLeave } = useLaneHoverSound(
+  toRef(props, 'logs'),
+)
+
+const {
+  lanes,
+  visibleLaneIds,
+  showLaneFilter,
+  displayCommits,
+  toggleLane,
+  showAllLanes,
+  showMainLaneOnly,
+} = useGraphLaneFilter(toRef(props, 'logs'))
 
 function readStoredViewMode(): 'list' | 'graph' {
   try {
@@ -102,10 +119,32 @@ function onScroll(event: Event) {
     </div>
 
     <div
-      v-if="viewMode === 'graph' && logs.length > 0"
-      class="px-2.5 py-1.5 text-[10px] leading-relaxed text-[--text-secondary] border-b border-[--border-color] bg-[--bg-secondary]"
+      v-if="logs.length > 0"
+      class="shrink-0 flex items-center justify-between gap-2 px-2.5 py-1.5 text-[10px] leading-relaxed text-[--text-secondary] border-b border-[--border-color] bg-[--bg-secondary]"
     >
-      竖线表示提交链，线条汇合为合并。悬停可高亮路径；多泳道时可在右上角筛选。
+      <span v-if="viewMode === 'graph'" class="min-w-0">竖线表示提交链，线条汇合为合并。悬停可高亮路径。</span>
+      <div
+        class="flex items-center gap-2 shrink-0"
+        :class="viewMode === 'list' ? 'ml-auto' : ''"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center justify-center p-1 rounded-[var(--radius)] text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors cursor-pointer"
+          :title="hoverSoundEnabled ? '关闭泳道音效' : '开启泳道音效'"
+          @click="toggleHoverSound"
+        >
+          <Volume2 v-if="hoverSoundEnabled" :size="12" />
+          <VolumeX v-else :size="12" />
+        </button>
+        <GraphLaneFilter
+          v-if="viewMode === 'graph' && showLaneFilter"
+          :lanes="lanes"
+          :visible-lane-ids="visibleLaneIds"
+          @toggle-lane="toggleLane"
+          @show-all="showAllLanes"
+          @show-main-only="showMainLaneOnly"
+        />
+      </div>
     </div>
 
     <div v-if="loading && logs.length === 0" class="flex items-center justify-center py-2.5 text-[--text-secondary]">
@@ -118,15 +157,17 @@ function onScroll(event: Event) {
     <div
       v-else
       ref="scrollRoot"
-      class="flex-1 overflow-y-auto overflow-x-auto"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-auto"
       @scroll="onScroll"
+      @mouseleave="onHoverAreaLeave"
     >
-      <template v-if="viewMode === 'list'">
+      <div v-if="viewMode === 'list'" key="history-list">
         <div
           v-for="log in logs"
           :key="log.hash"
           class="px-2.5 py-2.5 border-b border-[--border-color] cursor-pointer transition-colors"
           :class="log.hash === selectedHash ? 'bg-[--bg-tertiary] border-l-2 border-l-[--accent]' : 'hover:bg-[--bg-tertiary]'"
+          @mouseenter="onCommitHover(log.hash)"
           @click="emit('selectCommit', log.hash)"
         >
           <div class="flex items-center gap-1.5 min-w-0">
@@ -159,13 +200,15 @@ function onScroll(event: Event) {
             </span>
           </div>
         </div>
-      </template>
+      </div>
 
       <CommitGraphView
         v-else
-        :logs="logs"
+        key="history-graph"
+        :logs="displayCommits"
         :selected-hash="selectedHash"
         @select-commit="emit('selectCommit', $event)"
+        @commit-hover="onCommitHover($event.hash, $event.commits)"
       />
 
       <div v-if="loadingMore" class="flex items-center justify-center py-3 text-[--text-secondary]">

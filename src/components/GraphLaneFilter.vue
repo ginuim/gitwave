@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
 import type { GraphLane } from '../utils/commitGraph'
 
 const props = defineProps<{
   lanes: GraphLane[]
-  visibleLaneIds: Set<string>
+  visibleLaneIds: string[]
 }>()
 
 const emit = defineEmits<{
@@ -15,9 +15,10 @@ const emit = defineEmits<{
 }>()
 
 const open = ref(false)
+const visibleSet = computed(() => new Set(props.visibleLaneIds))
 
 function isVisible(laneId: string): boolean {
-  return props.visibleLaneIds.has(laneId)
+  return visibleSet.value.has(laneId)
 }
 
 function visibleCount(): number {
@@ -37,29 +38,14 @@ function onToggle(laneId: string) {
 function close() {
   open.value = false
 }
-
-function onDocumentClick(event: MouseEvent) {
-  const target = event.target as HTMLElement
-  if (!target.closest('.lane-filter')) {
-    close()
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('click', onDocumentClick)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', onDocumentClick)
-})
 </script>
 
 <template>
-  <div class="lane-filter relative shrink-0" @click.stop>
+  <div class="lane-filter relative shrink-0">
     <button
       type="button"
       class="inline-flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] border border-[--border-color] text-[10px] text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors cursor-pointer"
-      @click="open = !open"
+      @click.stop="open = !open"
     >
       泳道 {{ visibleCount() }}/{{ lanes.length }}
       <ChevronDown :size="12" class="transition-transform" :class="open ? 'rotate-180' : ''" />
@@ -68,6 +54,7 @@ onUnmounted(() => {
     <div
       v-if="open"
       class="absolute right-0 top-full mt-1 min-w-[200px] max-w-[260px] bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-md z-50 py-1"
+      @click.stop
     >
       <div class="flex items-center justify-between gap-2 px-2.5 py-1.5 border-b border-[--border-color]">
         <span class="text-[10px] text-[--text-secondary]">显示泳道</span>

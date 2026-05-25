@@ -45,7 +45,7 @@ export interface CommitGraphLayout {
   paths: GraphPath[]
   laneCount: number
   height: number
-  columnByHash: Map<string, number>
+  columnByHash: Record<string, number>
 }
 
 function laneX(column: number): number {
@@ -160,40 +160,43 @@ export function buildGraphLanes(commits: CommitLog[], layout: CommitGraphLayout)
 
 export function syncVisibleLaneIds(
   lanes: GraphLane[],
-  visibleLaneIds: Set<string>,
-  knownLaneIds: Set<string>,
-): { visibleLaneIds: Set<string>; knownLaneIds: Set<string> } {
+  visibleLaneIds: string[],
+  knownLaneIds: string[],
+): { visibleLaneIds: string[]; knownLaneIds: string[] } {
   const present = new Set(lanes.map((lane) => lane.id))
-  const nextVisible = new Set([...visibleLaneIds].filter((id) => present.has(id)))
-  const nextKnown = new Set(knownLaneIds)
+  const nextVisible = visibleLaneIds.filter((id) => present.has(id))
+  const nextKnown = [...knownLaneIds]
 
   for (const lane of lanes) {
-    if (!nextKnown.has(lane.id)) {
-      nextKnown.add(lane.id)
-      nextVisible.add(lane.id)
+    if (!nextKnown.includes(lane.id)) {
+      nextKnown.push(lane.id)
+      nextVisible.push(lane.id)
     }
   }
 
-  if (nextVisible.size === 0) {
-    for (const lane of lanes) nextVisible.add(lane.id)
+  if (nextVisible.length === 0) {
+    return {
+      visibleLaneIds: lanes.map((lane) => lane.id),
+      knownLaneIds: nextKnown,
+    }
   }
 
   return { visibleLaneIds: nextVisible, knownLaneIds: nextKnown }
 }
 
-export function visibleColumnsFromLanes(lanes: GraphLane[], visibleLaneIds: Set<string>): Set<number> {
-  return new Set(
-    lanes.filter((lane) => visibleLaneIds.has(lane.id)).map((lane) => lane.column),
-  )
+export function visibleColumnsFromLanes(lanes: GraphLane[], visibleLaneIds: string[]): number[] {
+  const visible = new Set(visibleLaneIds)
+  return lanes.filter((lane) => visible.has(lane.id)).map((lane) => lane.column)
 }
 
 export function filterCommitsByColumns(
   commits: CommitLog[],
   layout: CommitGraphLayout,
-  visibleColumns: Set<number>,
+  visibleColumns: number[],
 ): CommitLog[] {
-  if (visibleColumns.size === 0) return commits
-  return commits.filter((commit) => visibleColumns.has(layout.columnByHash.get(commit.hash) ?? 0))
+  if (visibleColumns.length === 0) return commits
+  const allowed = new Set(visibleColumns)
+  return commits.filter((commit) => allowed.has(layout.columnByHash[commit.hash] ?? 0))
 }
 
 export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
@@ -203,7 +206,7 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
       paths: [],
       laneCount: 1,
       height: 0,
-      columnByHash: new Map(),
+      columnByHash: {},
     }
   }
 
@@ -298,8 +301,8 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
     }
   }
 
-  const columnByHash = new Map<string, number>()
-  for (const node of nodes) columnByHash.set(node.hash, node.column)
+  const columnByHash: Record<string, number> = {}
+  for (const node of nodes) columnByHash[node.hash] = node.column
 
   return {
     nodes,
@@ -308,6 +311,12 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
     height: commits.length * GRAPH_ROW_HEIGHT,
     columnByHash,
   }
+}
+
+export function distinctColumnCount(columnByHash: Record<string, number>): number {
+  const columns = Object.values(columnByHash)
+  if (columns.length === 0) return 0
+  return new Set(columns).size
 }
 
 export function shortHash(hash: string): string {
