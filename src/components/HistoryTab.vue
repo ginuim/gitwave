@@ -39,6 +39,8 @@ const {
   visibleLaneIds,
   showLaneFilter,
   displayCommits,
+  displayLayout,
+  displayLanes,
   toggleLane,
   showAllLanes,
   showMainLaneOnly,
@@ -214,6 +216,8 @@ function handleHoverAreaLeave() {
         ref="graphViewRef"
         key="history-graph"
         :logs="displayCommits"
+        :graph-layout="displayLayout"
+        :display-lanes="displayLanes"
         :branch-tips="branchTips"
         :selected-hash="selectedHash"
         @select-commit="emit('selectCommit', $event)"

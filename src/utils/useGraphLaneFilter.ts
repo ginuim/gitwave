@@ -3,6 +3,7 @@ import type { BranchTip, CommitLog } from '../types'
 import {
   layoutCommitGraph,
   buildGraphLanes,
+  buildFilteredGraphLayout,
   syncVisibleLaneIds,
   visibleColumnsFromLanes,
   filterCommitsByColumns,
@@ -48,6 +49,18 @@ export function useGraphLaneFilter(
     filterCommitsByColumns(toValue(logs), fullLayout.value, visibleColumns.value),
   )
 
+  const displayLayout = computed(() =>
+    buildFilteredGraphLayout(toValue(logs), fullLayout.value, visibleColumns.value),
+  )
+
+  const displayLanes = computed(() =>
+    buildGraphLanes(
+      displayCommits.value,
+      displayLayout.value,
+      branchTipsByHash(toValue(branchTips) ?? []),
+    ),
+  )
+
   function toggleLane(laneId: string) {
     const next = new Set(visibleLaneIds.value)
     if (next.has(laneId)) {
@@ -74,6 +87,8 @@ export function useGraphLaneFilter(
     visibleLaneIds,
     showLaneFilter,
     displayCommits,
+    displayLayout,
+    displayLanes,
     toggleLane,
     showAllLanes,
     showMainLaneOnly,

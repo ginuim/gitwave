@@ -283,6 +283,119 @@ export function filterCommitsByColumns(
   return commits.filter((commit) => allowed.has(layout.columnByHash[commit.hash] ?? 0))
 }
 
+function appendGraphPath(
+  paths: GraphPath[],
+  commitHash: string,
+  parentHash: string,
+  row: number,
+  parentRow: number,
+  column: number,
+  parentColumn: number,
+  color: string,
+): void {
+  const x1 = laneX(column)
+  const y1 = rowY(row)
+  const x2 = laneX(parentColumn)
+  const y2 = rowY(parentRow)
+
+  if (column === parentColumn) {
+    paths.push({
+      d: `M ${x1} ${y1} L ${x2} ${y2}`,
+      color,
+      fromHash: commitHash,
+      toHash: parentHash,
+      fromColumn: column,
+      toColumn: parentColumn,
+      fromRow: row,
+      toRow: parentRow,
+    })
+    return
+  }
+
+  const branchY = y1 + GRAPH_ROW_HEIGHT / 2
+  paths.push({
+    d: `M ${x1} ${y1} L ${x1} ${branchY} L ${x2} ${branchY} L ${x2} ${y2}`,
+    color,
+    fromHash: commitHash,
+    toHash: parentHash,
+    fromColumn: column,
+    toColumn: parentColumn,
+    fromRow: row,
+    toRow: parentRow,
+  })
+}
+
+function laneCountFromNodes(nodes: GraphNode[]): number {
+  if (nodes.length === 0) return 1
+  let maxColumn = 0
+  for (const node of nodes) {
+    if (node.column > maxColumn) maxColumn = node.column
+  }
+  return maxColumn + 1
+}
+
+export function buildFilteredGraphLayout(
+  commits: CommitLog[],
+  fullLayout: CommitGraphLayout,
+  visibleColumns: number[],
+): CommitGraphLayout {
+  if (visibleColumns.length === 0) return fullLayout
+
+  const allowed = new Set(visibleColumns)
+  const filtered = commits.filter((commit) => allowed.has(fullLayout.columnByHash[commit.hash] ?? 0))
+
+  if (filtered.length === 0) {
+    return {
+      nodes: [],
+      paths: [],
+      laneCount: 1,
+      height: 0,
+      columnByHash: {},
+    }
+  }
+
+  const usedOriginalColumns = [...new Set(
+    filtered.map((commit) => fullLayout.columnByHash[commit.hash] ?? 0),
+  )].sort((a, b) => a - b)
+  const columnRemap = new Map(usedOriginalColumns.map((column, index) => [column, index]))
+  const hashToRow = new Map(filtered.map((commit, index) => [commit.hash, index]))
+  const colorByHash = new Map(fullLayout.nodes.map((node) => [node.hash, node.color]))
+  const laneColor = new Map<number, string>()
+  const nextColor = { value: 0 }
+  const nodes: GraphNode[] = []
+  const paths: GraphPath[] = []
+  const columnByHash: Record<string, number> = {}
+
+  for (let row = 0; row < filtered.length; row += 1) {
+    const commit = filtered[row]
+    const originalColumn = fullLayout.columnByHash[commit.hash] ?? 0
+    const column = columnRemap.get(originalColumn) ?? 0
+    const color = colorByHash.get(commit.hash) ?? colorForColumn(column, laneColor, nextColor)
+    nodes.push({ hash: commit.hash, row, column, color })
+    columnByHash[commit.hash] = column
+
+    for (const parentHash of commit.parents) {
+      const parentRow = hashToRow.get(parentHash)
+      if (parentRow === undefined) continue
+
+      const parentOriginalColumn = fullLayout.columnByHash[parentHash] ?? originalColumn
+      const parentColumn = columnRemap.get(parentOriginalColumn) ?? column
+      const parentColor = colorByHash.get(parentHash)
+        ?? colorByHash.get(commit.hash)
+        ?? colorForColumn(parentColumn, laneColor, nextColor)
+      appendGraphPath(paths, commit.hash, parentHash, row, parentRow, column, parentColumn, parentColor)
+    }
+  }
+
+  return {
+    nodes,
+    paths,
+    laneCount: laneCountFromNodes(nodes),
+    height: filtered.length * GRAPH_ROW_HEIGHT,
+    columnByHash,
+  }
+}
+
 export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
   if (commits.length === 0) {
     return {
@@ -356,35 +469,7 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
 
       const parentColumn = remapColumn(columns.get(parentHash) ?? column)
       const parentColor = colorForColumn(parentColumn, laneColor, nextColor)
-      const x1 = laneX(column)
-      const y1 = rowY(row)
-      const x2 = laneX(parentColumn)
-      const y2 = rowY(parentRow)
-
-      if (column === parentColumn) {
-        paths.push({
-          d: `M ${x1} ${y1} L ${x2} ${y2}`,
-          color: parentColor,
-          fromHash: commit.hash,
-          toHash: parentHash,
-          fromColumn: column,
-          toColumn: parentColumn,
-          fromRow: row,
-          toRow: parentRow,
-        })
-      } else {
-        const branchY = y1 + GRAPH_ROW_HEIGHT / 2
-        paths.push({
-          d: `M ${x1} ${y1} L ${x1} ${branchY} L ${x2} ${branchY} L ${x2} ${y2}`,
-          color: parentColor,
-          fromHash: commit.hash,
-          toHash: parentHash,
-          fromColumn: column,
-          toColumn: parentColumn,
-          fromRow: row,
-          toRow: parentRow,
-        })
-      }
+      appendGraphPath(paths, commit.hash, parentHash, row, parentRow, column, parentColumn, parentColor)
     }
   }
 
@@ -394,7 +479,7 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
   return {
     nodes,
     paths,
-    laneCount: Math.max(usedColumns.length, 1),
+    laneCount: laneCountFromNodes(nodes),
     height: commits.length * GRAPH_ROW_HEIGHT,
     columnByHash,
   }

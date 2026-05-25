@@ -3,25 +3,27 @@ import { computed, ref, watch } from 'vue'
 import { User, CalendarDays, Hash, GitMerge } from 'lucide-vue-next'
 import type { BranchTip, CommitLog } from '../types'
 import {
-  layoutCommitGraph,
   collectRelatedHashes,
   isPathHighlighted,
   isMergeCommit,
   shortHash,
   formatCommitDate,
-  buildGraphLanes,
   laneForColumn,
   GRAPH_ROW_HEIGHT,
   GRAPH_LANE_WIDTH,
   GRAPH_NODE_RADIUS,
   GRAPH_NODE_RADIUS_ACTIVE,
   type GraphPath,
+  type CommitGraphLayout,
+  type GraphLane,
 } from '../utils/commitGraph'
 
 const props = defineProps<{
   logs: CommitLog[]
   branchTips: BranchTip[]
   selectedHash: string | null
+  graphLayout: CommitGraphLayout
+  displayLanes: GraphLane[]
 }>()
 
 const emit = defineEmits<{
@@ -32,17 +34,9 @@ const emit = defineEmits<{
 const hoveredHash = ref<string | null>(null)
 const hoveredLaneColumn = ref<number | null>(null)
 
-const layout = computed(() => layoutCommitGraph(props.logs))
-const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 12)
-const displayLanes = computed(() => {
-  const tipsByHash = new Map<string, string[]>()
-  for (const tip of props.branchTips) {
-    const names = tipsByHash.get(tip.hash) ?? []
-    names.push(tip.name)
-    tipsByHash.set(tip.hash, names)
-  }
-  return buildGraphLanes(props.logs, layout.value, tipsByHash)
-})
+const layout = computed(() => props.graphLayout)
+const laneCount = computed(() => Math.max(props.displayLanes.length, 1))
+const graphWidth = computed(() => laneCount.value * GRAPH_LANE_WIDTH)
 
 const focusHash = computed(() => hoveredHash.value ?? props.selectedHash)
 const focusSet = computed(() => collectRelatedHashes(focusHash.value, props.logs))
@@ -50,7 +44,7 @@ const hasFocus = computed(() => focusSet.value !== null)
 
 const hoveredLaneLabel = computed(() => {
   if (hoveredLaneColumn.value === null) return null
-  return laneForColumn(displayLanes.value, hoveredLaneColumn.value)?.label
+  return laneForColumn(props.displayLanes, hoveredLaneColumn.value)?.label
     ?? (hoveredLaneColumn.value === 0 ? '主线' : `分支 ${hoveredLaneColumn.value}`)
 })
 
@@ -212,7 +206,7 @@ defineExpose({ clearHover })
       @mousemove="onGraphMouseMove"
     >
       <div
-        v-for="column in layout.laneCount"
+        v-for="column in laneCount"
         :key="`lane-hit-${column - 1}`"
         class="h-full"
         :style="{ width: `${GRAPH_LANE_WIDTH}px` }"
