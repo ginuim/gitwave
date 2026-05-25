@@ -5,8 +5,10 @@ import {
   List, History, Loader2, ChevronRight, ChevronDown, Plus, Tag,
   ChevronDown as ChevronDownIcon,
   RefreshCw, ArrowDownToLine, ArrowUpToLine, Archive, Settings,
+  FolderTree,
 } from 'lucide-vue-next'
-import type { BranchInfo, AheadBehind } from '../types'
+import type { BranchInfo, AheadBehind, SubtreeInfo } from '../types'
+import { getSubtreeRemoteConfig, saveSubtreeRemoteConfig, shortCommit } from '../utils/subtree'
 
 const props = defineProps<{
   repoPath: string | null
@@ -19,6 +21,8 @@ const props = defineProps<{
   pinnedBranches: string[]
   stashEntries: { index: number; message: string; branch: string }[]
   tags: string[]
+  subtrees: SubtreeInfo[]
+  subtreeActionLoading: string | null
   aheadBehind: AheadBehind
   fetchLoading: boolean
 }>()
@@ -44,6 +48,8 @@ const emit = defineEmits<{
   fetch: []
   push: []
   pull: []
+  subtreePull: [prefix: string, remote: string, branch: string]
+  subtreePush: [prefix: string, remote: string, branch: string]
   settingsOpen: []
   cloneRepo: [url: string, targetDir: string]
 }>()
@@ -191,6 +197,52 @@ function submitClone() {
 const sidebarRemoteExpanded = ref(false)
 const sidebarTagsExpanded = ref(false)
 const sidebarStashesExpanded = ref(false)
+const sidebarSubtreesExpanded = ref(false)
+
+function toggleSubtreesSection() {
+  sidebarSubtreesExpanded.value = !sidebarSubtreesExpanded.value
+}
+
+// --- Subtree pull/push dialog ---
+const subtreeDialog = ref<{
+  prefix: string
+  action: 'pull' | 'push'
+  remote: string
+  branch: string
+} | null>(null)
+
+function openSubtreeDialog(prefix: string, action: 'pull' | 'push') {
+  const saved = props.repoPath
+    ? getSubtreeRemoteConfig(props.repoPath, prefix)
+    : null
+  subtreeDialog.value = {
+    prefix,
+    action,
+    remote: saved?.remote ?? '',
+    branch: saved?.branch ?? 'main',
+  }
+}
+
+function cancelSubtreeDialog() {
+  subtreeDialog.value = null
+}
+
+function submitSubtreeDialog() {
+  const d = subtreeDialog.value
+  if (!d || !d.remote.trim() || !d.branch.trim()) return
+  if (props.repoPath) {
+    saveSubtreeRemoteConfig(props.repoPath, d.prefix, {
+      remote: d.remote.trim(),
+      branch: d.branch.trim(),
+    })
+  }
+  if (d.action === 'pull') {
+    emit('subtreePull', d.prefix, d.remote.trim(), d.branch.trim())
+  } else {
+    emit('subtreePush', d.prefix, d.remote.trim(), d.branch.trim())
+  }
+  subtreeDialog.value = null
+}
 
 function toggleTagsSection() {
   sidebarTagsExpanded.value = !sidebarTagsExpanded.value
@@ -971,6 +1023,56 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
           </div>
         </div>
 
+        <!-- Subtrees (collapsed by default) -->
+        <div v-if="props.subtrees.length > 0" class="mt-1 mb-0.5">
+          <button
+            class="flex items-center gap-1.5 pl-2 w-full text-xs text-[--text-secondary] uppercase tracking-wide hover:text-[--text-primary] transition-colors cursor-pointer"
+            @click="toggleSubtreesSection"
+          >
+            <ChevronRight v-if="!sidebarSubtreesExpanded" :size="11" />
+            <ChevronDown v-else :size="11" />
+            <FolderTree :size="11" />
+            <span>Subtree ({{ props.subtrees.length }})</span>
+          </button>
+          <div v-if="sidebarSubtreesExpanded" class="mt-1 space-y-0.5">
+            <div
+              v-for="st in props.subtrees"
+              :key="st.prefix"
+              class="flex items-start gap-1 pl-5 pr-2 py-1 rounded text-xs text-[--text-secondary] group min-w-0"
+            >
+              <FolderTree :size="12" class="flex-shrink-0 mt-0.5" />
+              <div class="flex-1 min-w-0">
+                <div class="truncate font-mono-ui text-[--text-primary]" :title="st.prefix">{{ st.prefix }}</div>
+                <div class="text-[10px] opacity-70 font-mono-ui">
+                  split {{ shortCommit(st.splitCommit) }}
+                  <span v-if="st.pendingChanges > 0" class="ml-1 text-[--accent]">
+                    · {{ st.pendingChanges }} 变更
+                  </span>
+                </div>
+              </div>
+              <div class="flex flex-col gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  class="px-1.5 py-0.5 rounded text-[10px] bg-[--bg-tertiary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer disabled:opacity-40"
+                  :disabled="props.subtreeActionLoading === st.prefix"
+                  title="从上游拉取 subtree"
+                  @click.stop="openSubtreeDialog(st.prefix, 'pull')"
+                >
+                  <Loader2 v-if="props.subtreeActionLoading === st.prefix" :size="10" class="animate-spin inline" />
+                  <span v-else>Pull</span>
+                </button>
+                <button
+                  class="px-1.5 py-0.5 rounded text-[10px] bg-[--bg-tertiary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer disabled:opacity-40"
+                  :disabled="props.subtreeActionLoading === st.prefix"
+                  title="推送到上游"
+                  @click.stop="openSubtreeDialog(st.prefix, 'push')"
+                >
+                  Push
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Stashes (collapsed by default) -->
         <div class="mt-1 mb-0.5">
           <button
@@ -1318,6 +1420,57 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
             >
               <Loader2 v-if="cloneLoading" :size="12" class="animate-spin mr-1 inline" />
               <span>{{ cloneLoading ? '克隆中...' : '克隆' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Subtree pull/push dialog -->
+    <Teleport to="body">
+      <div
+        v-if="subtreeDialog"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click="cancelSubtreeDialog"
+      >
+        <div
+          class="bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-xl p-2.5 w-[400px]"
+          @click.stop
+        >
+          <div class="text-xs text-[--text-primary] mb-2 font-medium">
+            Subtree {{ subtreeDialog.action === 'pull' ? 'Pull' : 'Push' }} · {{ subtreeDialog.prefix }}
+          </div>
+          <div class="space-y-2.5">
+            <div>
+              <label class="block text-[11px] text-[--text-secondary] mb-1">Remote URL 或名称</label>
+              <input
+                v-model="subtreeDialog.remote"
+                placeholder="origin 或 https://github.com/user/repo.git"
+                class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
+                @keydown.enter="submitSubtreeDialog"
+              />
+            </div>
+            <div>
+              <label class="block text-[11px] text-[--text-secondary] mb-1">分支</label>
+              <input
+                v-model="subtreeDialog.branch"
+                placeholder="main"
+                class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-secondary] border border-[--border-color] text-xs text-[--text-primary] outline-none focus:border-[--accent] transition-colors font-mono-ui"
+                @keydown.enter="submitSubtreeDialog"
+              />
+            </div>
+          </div>
+          <div class="flex justify-end gap-2 mt-2.5">
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-secondary] transition-colors cursor-pointer"
+              @click="cancelSubtreeDialog"
+            >取消</button>
+            <button
+              class="px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 cursor-pointer"
+              :disabled="!subtreeDialog.remote.trim() || !subtreeDialog.branch.trim()"
+              @click="submitSubtreeDialog"
+            >
+              {{ subtreeDialog.action === 'pull' ? 'Pull' : 'Push' }}
             </button>
           </div>
         </div>

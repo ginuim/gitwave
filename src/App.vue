@@ -10,7 +10,7 @@ import HistoryTab from './components/HistoryTab.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
-import type { FileStatus, CommitLog, BranchInfo, AheadBehind, WorktreeState, CheckoutMode } from './types'
+import type { FileStatus, CommitLog, BranchInfo, AheadBehind, WorktreeState, CheckoutMode, SubtreeInfo } from './types'
 import { isUntrackedPath } from './utils/gitStatus'
 
 // State
@@ -41,6 +41,8 @@ const recentRepos = ref<string[]>([])
 const pinnedBranches = ref<string[]>([])
 const stashEntries = ref<any[]>([])
 const tags = ref<string[]>([])
+const subtrees = ref<SubtreeInfo[]>([])
+const subtreeActionLoading = ref<string | null>(null)
 const settingsOpen = ref(false)
 const settingsRevision = ref(0)
 /** 提交成功后递增，驱动工作区「已提交」短提示（避免用 commitLoading 启发式推断） */
@@ -105,7 +107,7 @@ onMounted(async () => {
     const path = await invoke<string | null>('get_repo_path')
     repoPath.value = path
     if (path) {
-      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind(), stashList()])
+      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind(), stashList(), refreshSubtrees()])
     }
   } catch (_) {
     // ignore
@@ -152,7 +154,7 @@ async function cloneRepo(url: string, targetDir: string) {
     const path = await invoke<string>('clone_repository', { url, targetDir })
     repoPath.value = path
     showToast('仓库克隆成功', 'success')
-    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags()])
+    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), refreshSubtrees()])
   } catch (e: any) {
     showToast(String(e))
   }
@@ -175,11 +177,21 @@ async function refreshTags() {
   }
 }
 
+async function refreshSubtrees() {
+  if (!repoPath.value) return
+  try {
+    subtrees.value = await invoke<SubtreeInfo[]>('get_subtrees')
+  } catch (_) {
+    subtrees.value = []
+  }
+}
+
 async function syncRefresh(opts?: { silentStatus?: boolean }) {
   const tasks = [
     refreshStatus(opts?.silentStatus ? { silent: true } : undefined),
     refreshBranches(),
     refreshAheadBehind(),
+    refreshSubtrees(),
   ]
   if (activeTab.value === 'history') {
     tasks.push(refreshHistory())
@@ -195,6 +207,7 @@ async function switchRepo(path: string) {
     showToast('已切换仓库', 'success')
     await syncRefresh()
     await refreshTags()
+    await refreshSubtrees()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -311,7 +324,7 @@ async function commitChanges(message: string) {
   try {
     await invoke('commit_changes', { message })
     showToast('提交成功', 'success')
-    await Promise.all([refreshStatus(), refreshAheadBehind()])
+    await Promise.all([refreshStatus(), refreshAheadBehind(), refreshSubtrees()])
     ok = true
   } catch (e: any) {
     showToast(String(e))
@@ -426,11 +439,37 @@ async function gitPull() {
   try {
     const result = await invoke<string>('git_pull')
     showToast(!result || result === 'ok' ? 'Pull 成功' : result, 'success')
-    await Promise.all([refreshStatus(), refreshAheadBehind()])
+    await Promise.all([refreshStatus(), refreshAheadBehind(), refreshSubtrees()])
   } catch (e: any) {
     showToast(String(e))
   } finally {
     pullLoading.value = false
+  }
+}
+
+async function subtreePull(prefix: string, remote: string, branch: string) {
+  subtreeActionLoading.value = prefix
+  try {
+    const result = await invoke<string>('subtree_pull', { prefix, remote, branch })
+    showToast(!result || result === 'ok' ? `Subtree pull 成功：${prefix}` : result, 'success')
+    await syncRefresh({ silentStatus: true })
+  } catch (e: any) {
+    showToast(String(e))
+  } finally {
+    subtreeActionLoading.value = null
+  }
+}
+
+async function subtreePush(prefix: string, remote: string, branch: string) {
+  subtreeActionLoading.value = prefix
+  try {
+    const result = await invoke<string>('subtree_push', { prefix, remote, branch })
+    showToast(!result || result === 'ok' ? `Subtree push 成功：${prefix}` : result, 'success')
+    await syncRefresh({ silentStatus: true })
+  } catch (e: any) {
+    showToast(String(e))
+  } finally {
+    subtreeActionLoading.value = null
   }
 }
 
@@ -719,6 +758,8 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :pinned-branches="pinnedBranches"
         :stash-entries="stashEntries"
         :tags="tags"
+        :subtrees="subtrees"
+        :subtree-action-loading="subtreeActionLoading"
         @pin-branch="pinBranch"
         @unpin-branch="unpinBranch"
         @create-tag="createTag"
@@ -730,6 +771,8 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @fetch="gitFetch"
         @push="gitPush"
         @pull="gitPull"
+        @subtree-pull="subtreePull"
+        @subtree-push="subtreePush"
         @settings-open="settingsOpen = true"
         @clone-repo="cloneRepo"
       />
@@ -747,6 +790,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :status-loading="statusLoading"
         :repo-path="repoPath"
         :settings-revision="settingsRevision"
+        :subtrees="subtrees"
         @stage-file="stageFile"
         @unstage-file="unstageFile"
         @revert-file="revertFile"

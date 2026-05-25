@@ -5,8 +5,9 @@ import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2, Trash2 } from 'lucide-vue-next'
-import type { FileStatus, AppSettings, ProviderConfig, ModelConfig, AiStagedDiffContext } from '../types'
+import type { FileStatus, AppSettings, ProviderConfig, ModelConfig, AiStagedDiffContext, SubtreeInfo } from '../types'
 import { isUntrackedFile, isUntrackedPath } from '../utils/gitStatus'
+import { subtreePrefixForPath } from '../utils/subtree'
 
 const props = defineProps<{
   statuses: FileStatus[]
@@ -17,6 +18,7 @@ const props = defineProps<{
   statusLoading: boolean
   repoPath: string | null
   settingsRevision: number
+  subtrees: SubtreeInfo[]
 }>()
 
 const emit = defineEmits<{
@@ -411,6 +413,10 @@ async function showInFolder(relPath: string, e: Event) {
     emit('revealError', String(err))
   }
 }
+
+function subtreeBadge(path: string): string | null {
+  return subtreePrefixForPath(path, props.subtrees)
+}
 </script>
 
 <template>
@@ -492,7 +498,13 @@ async function showInFolder(relPath: string, e: Event) {
           >
             <FilePlus :size="12" />
           </button>
-          <span class="truncate flex-1 min-w-0 hover:text-[--accent] transition-colors font-mono-ui" :title="file.path">{{ file.path }}</span>
+          <span class="truncate flex-1 min-w-0 hover:text-[--accent] transition-colors font-mono-ui" :title="file.path">
+            <span
+              v-if="subtreeBadge(file.path)"
+              class="inline-flex items-center rounded px-1 py-0.5 mr-1 text-[9px] font-semibold bg-sky-900/40 text-sky-300 leading-none align-middle"
+              :title="`Subtree: ${subtreeBadge(file.path)}`"
+            >ST</span>{{ file.path }}
+          </span>
           <button
             v-if="repoPath"
             type="button"
@@ -575,7 +587,13 @@ async function showInFolder(relPath: string, e: Event) {
           >
             <FileMinus :size="12" />
           </button>
-          <span class="truncate flex-1 min-w-0 hover:text-[--accent] transition-colors font-mono-ui" :title="file.path">{{ file.path }}</span>
+          <span class="truncate flex-1 min-w-0 hover:text-[--accent] transition-colors font-mono-ui" :title="file.path">
+            <span
+              v-if="subtreeBadge(file.path)"
+              class="inline-flex items-center rounded px-1 py-0.5 mr-1 text-[9px] font-semibold bg-sky-900/40 text-sky-300 leading-none align-middle"
+              :title="`Subtree: ${subtreeBadge(file.path)}`"
+            >ST</span>{{ file.path }}
+          </span>
           <button
             v-if="repoPath"
             type="button"

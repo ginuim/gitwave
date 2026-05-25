@@ -23,6 +23,17 @@ export interface WorktreeState {
   inCherryPick: boolean;
 }
 
+export interface SubtreeInfo {
+  prefix: string;
+  splitCommit: string | null;
+  pendingChanges: number;
+}
+
+export interface SubtreeRemoteConfig {
+  remote: string;
+  branch: string;
+}
+
 export type CheckoutMode = 'normal' | 'stash' | 'discard';
 
 export interface CommitLog {

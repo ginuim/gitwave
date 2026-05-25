@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -50,6 +51,14 @@ pub struct WorktreeState {
     pub in_merge: bool,
     pub in_rebase: bool,
     pub in_cherry_pick: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtreeInfo {
+    pub prefix: String,
+    pub split_commit: Option<String>,
+    pub pending_changes: u32,
 }
 
 pub struct AppState {
@@ -1386,6 +1395,139 @@ fn get_pinned_branches(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     Ok(load_pinned_branches(&app))
 }
 
+// === Subtree ===
+
+fn path_under_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+fn normalize_subtree_prefix(prefix: &str) -> String {
+    prefix.trim().trim_matches('/').replace('\\', "/")
+}
+
+/// 从 git log 的 merge 提交信息中解析 subtree 前缀（log 按时间倒序，首次出现即最新）。
+fn discover_subtree_prefixes(repo: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    let raw = run_git(
+        repo,
+        &[
+            "log",
+            "--all",
+            "--grep=git-subtree-dir:",
+            "-1000",
+            "--format=%B%x00",
+        ],
+    )?;
+    let mut seen: HashMap<String, Option<String>> = HashMap::new();
+    for block in raw.split('\0') {
+        let mut dir: Option<String> = None;
+        let mut split: Option<String> = None;
+        for line in block.lines() {
+            if let Some(d) = line.strip_prefix("git-subtree-dir: ") {
+                dir = Some(normalize_subtree_prefix(d));
+            } else if let Some(s) = line.strip_prefix("git-subtree-split: ") {
+                split = Some(s.trim().to_string());
+            }
+        }
+        if let Some(d) = dir {
+            if !d.is_empty() {
+                seen.entry(d).or_insert(split);
+            }
+        }
+    }
+    let mut out: Vec<(String, Option<String>)> = seen.into_iter().collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+fn count_subtree_pending_changes(repo: &str, prefix: &str) -> Result<u32, String> {
+    let raw = run_git_with_config(
+        repo,
+        &[("core.quotepath", "false")],
+        &["status", "--porcelain"],
+    )?;
+    let mut paths = HashSet::new();
+    for line in raw.lines() {
+        let line = line.trim_end();
+        if line.len() < 4 {
+            continue;
+        }
+        let rest = line.get(3..).unwrap_or("");
+        let path = parse_porcelain_path(rest);
+        if !path.is_empty() && path_under_prefix(&path, prefix) {
+            paths.insert(path);
+        }
+    }
+    Ok(paths.len() as u32)
+}
+
+#[tauri::command]
+fn get_subtrees(state: State<'_, AppState>) -> Result<Vec<SubtreeInfo>, String> {
+    let repo = require_repo(&state)?;
+    let discovered = discover_subtree_prefixes(&repo)?;
+    let mut out = Vec::with_capacity(discovered.len());
+    for (prefix, split_commit) in discovered {
+        let pending_changes = count_subtree_pending_changes(&repo, &prefix).unwrap_or(0);
+        out.push(SubtreeInfo {
+            prefix,
+            split_commit,
+            pending_changes,
+        });
+    }
+    Ok(out)
+}
+
+fn run_subtree(repo: &str, action: &str, prefix: &str, remote: &str, branch: &str) -> Result<String, String> {
+    let prefix = normalize_subtree_prefix(prefix);
+    if prefix.is_empty() {
+        return Err("subtree prefix 不能为空".into());
+    }
+    let remote = remote.trim();
+    let branch = branch.trim();
+    if remote.is_empty() {
+        return Err("remote 不能为空".into());
+    }
+    if branch.is_empty() {
+        return Err("branch 不能为空".into());
+    }
+    let prefix_flag = format!("--prefix={prefix}");
+    run_git(
+        repo,
+        &["subtree", action, &prefix_flag, remote, branch],
+    )
+}
+
+#[tauri::command]
+async fn subtree_pull(
+    state: State<'_, AppState>,
+    prefix: String,
+    remote: String,
+    branch: String,
+) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let result = tokio::task::spawn_blocking(move || {
+        run_subtree(&repo, "pull", &prefix, &remote, &branch)
+    })
+    .await
+    .map_err(|e| format!("task failed: {e}"))?;
+    result.map(|s| if s.is_empty() { "ok".into() } else { s })
+}
+
+#[tauri::command]
+async fn subtree_push(
+    state: State<'_, AppState>,
+    prefix: String,
+    remote: String,
+    branch: String,
+) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let result = tokio::task::spawn_blocking(move || {
+        run_subtree(&repo, "push", &prefix, &remote, &branch)
+    })
+    .await
+    .map_err(|e| format!("task failed: {e}"))?;
+    result.map(|s| if s.is_empty() { "ok".into() } else { s })
+}
+
 // === Tags ===
 
 #[tauri::command]
@@ -2170,6 +2312,9 @@ pub fn run() {
             get_pinned_branches,
             create_tag,
             get_tags,
+            get_subtrees,
+            subtree_pull,
+            subtree_push,
             stash_save,
             stash_list,
             stash_apply,
