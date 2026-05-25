@@ -301,7 +301,6 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
   const active: (string | null)[] = []
   const laneColor = new Map<number, string>()
   const nextColor = { value: 0 }
-  let maxColumns = 1
 
   for (const commit of commits) {
     let column = active.indexOf(commit.hash)
@@ -314,12 +313,12 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
     }
 
     columns.set(commit.hash, column)
-    maxColumns = Math.max(maxColumns, active.length)
     active[column] = null
 
     const knownParents = commit.parents.filter((parent) => hashToRow.has(parent))
     for (let i = 0; i < knownParents.length; i += 1) {
       const parent = knownParents[i]
+      if (active.indexOf(parent) !== -1) continue
       if (i === 0) {
         active[column] = parent
       } else {
@@ -338,12 +337,16 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
     }
   }
 
+  const usedColumns = [...new Set(columns.values())].sort((a, b) => a - b)
+  const compactColumn = new Map(usedColumns.map((col, index) => [col, index]))
+  const remapColumn = (col: number) => compactColumn.get(col) ?? 0
+
   const nodes: GraphNode[] = []
   const paths: GraphPath[] = []
 
   for (let row = 0; row < commits.length; row += 1) {
     const commit = commits[row]
-    const column = columns.get(commit.hash) ?? 0
+    const column = remapColumn(columns.get(commit.hash) ?? 0)
     const color = colorForColumn(column, laneColor, nextColor)
     nodes.push({ hash: commit.hash, row, column, color })
 
@@ -351,7 +354,7 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
       const parentRow = hashToRow.get(parentHash)
       if (parentRow === undefined) continue
 
-      const parentColumn = columns.get(parentHash) ?? column
+      const parentColumn = remapColumn(columns.get(parentHash) ?? column)
       const parentColor = colorForColumn(parentColumn, laneColor, nextColor)
       const x1 = laneX(column)
       const y1 = rowY(row)
@@ -391,7 +394,7 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
   return {
     nodes,
     paths,
-    laneCount: Math.max(maxColumns, 1),
+    laneCount: Math.max(usedColumns.length, 1),
     height: commits.length * GRAPH_ROW_HEIGHT,
     columnByHash,
   }
