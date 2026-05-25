@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { User, CalendarDays, Hash, GitMerge } from 'lucide-vue-next'
+import { User, CalendarDays, Hash, GitMerge, Volume2, VolumeX } from 'lucide-vue-next'
 import type { CommitLog } from '../types'
 import GraphLaneFilter from './GraphLaneFilter.vue'
 import {
@@ -20,6 +20,13 @@ import {
   GRAPH_NODE_RADIUS_ACTIVE,
   type GraphPath,
 } from '../utils/commitGraph'
+import {
+  playLaneHoverTone,
+  unlockGraphHoverSound,
+  resetLaneHoverSound,
+  isGraphHoverSoundEnabled,
+  setGraphHoverSoundEnabled,
+} from '../utils/graphHoverSound'
 
 const props = defineProps<{
   logs: CommitLog[]
@@ -31,6 +38,7 @@ const emit = defineEmits<{
 }>()
 
 const hoveredHash = ref<string | null>(null)
+const hoverSoundEnabled = ref(isGraphHoverSoundEnabled())
 const visibleLaneIds = ref(new Set<string>())
 const knownLaneIds = ref(new Set<string>())
 
@@ -51,6 +59,12 @@ const displayCommits = computed(() =>
 
 const layout = computed(() => layoutCommitGraph(displayCommits.value))
 const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 12)
+
+const columnByHash = computed(() => {
+  const map = new Map<string, number>()
+  for (const node of layout.value.nodes) map.set(node.hash, node.column)
+  return map
+})
 
 const focusHash = computed(() => hoveredHash.value ?? props.selectedHash)
 const focusSet = computed(() => collectRelatedHashes(focusHash.value, displayCommits.value))
@@ -96,15 +110,43 @@ function showMainLaneOnly() {
   if (!main) return
   visibleLaneIds.value = new Set([main.id])
 }
+
+function toggleHoverSound() {
+  hoverSoundEnabled.value = !hoverSoundEnabled.value
+  setGraphHoverSoundEnabled(hoverSoundEnabled.value)
+}
+
+function onRowEnter(hash: string) {
+  unlockGraphHoverSound()
+  hoveredHash.value = hash
+  if (!hoverSoundEnabled.value) return
+  const column = columnByHash.value.get(hash)
+  if (column !== undefined) void playLaneHoverTone(column)
+}
+
+function onGraphLeave() {
+  hoveredHash.value = null
+  resetLaneHoverSound()
+}
 </script>
 
 <template>
-  <div>
+  <div @mouseleave="onGraphLeave">
     <div
-      v-if="lanes.length > 1"
-      class="sticky top-0 z-20 flex items-center justify-end px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-secondary]/95 backdrop-blur-sm"
+      v-if="displayCommits.length > 0"
+      class="sticky top-0 z-20 flex items-center justify-end gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-secondary]/95 backdrop-blur-sm"
     >
+      <button
+        type="button"
+        class="inline-flex items-center justify-center p-1 rounded-[var(--radius)] text-[--text-secondary] hover:text-[--text-primary] hover:bg-[--bg-tertiary] transition-colors cursor-pointer"
+        :title="hoverSoundEnabled ? '关闭泳道音效' : '开启泳道音效'"
+        @click="toggleHoverSound"
+      >
+        <Volume2 v-if="hoverSoundEnabled" :size="12" />
+        <VolumeX v-else :size="12" />
+      </button>
       <GraphLaneFilter
+        v-if="lanes.length > 1"
         :lanes="lanes"
         :visible-lane-ids="visibleLaneIds"
         @toggle-lane="toggleLane"
@@ -157,8 +199,7 @@ function showMainLaneOnly() {
         :key="log.hash"
         class="absolute left-0 right-0 flex items-stretch border-b border-[--border-color] cursor-pointer"
         :style="{ top: `${row * GRAPH_ROW_HEIGHT}px`, height: `${GRAPH_ROW_HEIGHT}px` }"
-        @mouseenter="hoveredHash = log.hash"
-        @mouseleave="hoveredHash = null"
+        @mouseenter="onRowEnter(log.hash)"
         @click="emit('selectCommit', log.hash)"
       >
         <div class="shrink-0 pointer-events-none" :style="{ width: `${graphWidth}px` }" />
