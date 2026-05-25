@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { User, CalendarDays, Hash } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { User, CalendarDays, Hash, GitMerge } from 'lucide-vue-next'
 import type { CommitLog } from '../types'
 import {
   layoutCommitGraph,
+  collectRelatedHashes,
+  isPathHighlighted,
+  isMergeCommit,
   shortHash,
   formatCommitDate,
   GRAPH_ROW_HEIGHT,
   GRAPH_LANE_WIDTH,
   GRAPH_NODE_RADIUS,
+  GRAPH_NODE_RADIUS_ACTIVE,
+  type GraphPath,
 } from '../utils/commitGraph'
 
 const props = defineProps<{
@@ -20,10 +25,34 @@ const emit = defineEmits<{
   selectCommit: [hash: string]
 }>()
 
+const hoveredHash = ref<string | null>(null)
+
 const layout = computed(() => layoutCommitGraph(props.logs))
+const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 12)
 
-const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 8)
+const focusHash = computed(() => hoveredHash.value ?? props.selectedHash)
+const focusSet = computed(() => collectRelatedHashes(focusHash.value, props.logs))
+const hasFocus = computed(() => focusSet.value !== null)
 
+function nodeRadius(hash: string): number {
+  if (hash === focusHash.value) return GRAPH_NODE_RADIUS_ACTIVE
+  return GRAPH_NODE_RADIUS
+}
+
+function nodeOpacity(hash: string): number {
+  if (!hasFocus.value) return 1
+  return focusSet.value!.has(hash) ? 1 : 0.35
+}
+
+function pathOpacity(path: GraphPath): number {
+  if (!hasFocus.value) return 0.55
+  return isPathHighlighted(path, focusSet.value) ? 0.95 : 0.1
+}
+
+function pathWidth(path: GraphPath): number {
+  if (!hasFocus.value) return 1.5
+  return isPathHighlighted(path, focusSet.value) ? 2.5 : 1.5
+}
 </script>
 
 <template>
@@ -39,20 +68,23 @@ const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 8)
         :d="segment.d"
         fill="none"
         :stroke="segment.color"
-        stroke-width="2"
+        :stroke-width="pathWidth(segment)"
         stroke-linecap="round"
         stroke-linejoin="round"
-        opacity="0.85"
+        :opacity="pathOpacity(segment)"
+        class="transition-opacity duration-150"
       />
       <circle
         v-for="node in layout.nodes"
         :key="`node-${node.hash}`"
         :cx="node.column * GRAPH_LANE_WIDTH + GRAPH_LANE_WIDTH / 2"
         :cy="node.row * GRAPH_ROW_HEIGHT + GRAPH_ROW_HEIGHT / 2"
-        :r="GRAPH_NODE_RADIUS"
-        :fill="node.color"
+        :r="nodeRadius(node.hash)"
+        :fill="node.hash === focusHash ? 'var(--accent)' : node.color"
         :stroke="node.hash === selectedHash ? 'var(--text-primary)' : 'var(--bg-secondary)'"
-        :stroke-width="node.hash === selectedHash ? 2 : 1"
+        :stroke-width="node.hash === selectedHash || node.hash === focusHash ? 2 : 1"
+        :opacity="nodeOpacity(node.hash)"
+        class="transition-all duration-150"
       />
     </svg>
 
@@ -61,6 +93,8 @@ const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 8)
       :key="log.hash"
       class="absolute left-0 right-0 flex items-stretch border-b border-[--border-color] cursor-pointer"
       :style="{ top: `${row * GRAPH_ROW_HEIGHT}px`, height: `${GRAPH_ROW_HEIGHT}px` }"
+      @mouseenter="hoveredHash = log.hash"
+      @mouseleave="hoveredHash = null"
       @click="emit('selectCommit', log.hash)"
     >
       <div class="shrink-0 pointer-events-none" :style="{ width: `${graphWidth}px` }" />
@@ -68,10 +102,20 @@ const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 8)
         class="flex-1 min-w-0 px-2.5 py-2 flex flex-col justify-center border-l border-[--border-color] transition-colors"
         :class="log.hash === selectedHash
           ? 'bg-[--bg-tertiary] border-l-2 border-l-[--accent]'
-          : 'hover:bg-[--bg-tertiary]'"
+          : log.hash === hoveredHash
+            ? 'bg-[--bg-tertiary]/70'
+            : 'hover:bg-[--bg-tertiary]/70'"
       >
         <div class="flex items-center gap-1.5 min-w-0">
           <span class="text-xs text-[--text-primary] font-medium truncate">{{ log.message }}</span>
+          <span
+            v-if="isMergeCommit(log)"
+            class="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-amber-500/15 text-amber-600 dark:text-amber-400"
+            title="合并提交"
+          >
+            <GitMerge :size="9" />
+            合并
+          </span>
           <span
             v-for="ref in log.refs"
             :key="ref"
@@ -87,7 +131,7 @@ const graphWidth = computed(() => layout.value.laneCount * GRAPH_LANE_WIDTH + 8)
             <User :size="10" />
             {{ log.author }}
           </span>
-          <span class="flex items-center gap-1">
+          <span class="flex items-center gap-1" :title="log.date">
             <CalendarDays :size="10" />
             {{ formatCommitDate(log.date) }}
           </span>

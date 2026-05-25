@@ -1,18 +1,18 @@
 import type { CommitLog } from '../types'
 
 export const GRAPH_ROW_HEIGHT = 56
-export const GRAPH_LANE_WIDTH = 14
+export const GRAPH_LANE_WIDTH = 16
 export const GRAPH_NODE_RADIUS = 4
+export const GRAPH_NODE_RADIUS_ACTIVE = 6
 
-const LANE_COLORS = [
+const MAIN_LANE_COLOR = '#94a3b8'
+const BRANCH_LANE_COLORS = [
   '#3b82f6',
   '#f59e0b',
   '#22c55e',
-  '#ef4444',
   '#a855f7',
   '#ec4899',
   '#06b6d4',
-  '#84cc16',
 ]
 
 export interface GraphNode {
@@ -25,6 +25,8 @@ export interface GraphNode {
 export interface GraphPath {
   d: string
   color: string
+  fromHash: string
+  toHash: string
 }
 
 export interface CommitGraphLayout {
@@ -43,11 +45,59 @@ function rowY(row: number): number {
 }
 
 function colorForColumn(column: number, laneColor: Map<number, string>, nextColor: { value: number }): string {
+  if (column === 0) return MAIN_LANE_COLOR
   if (!laneColor.has(column)) {
-    laneColor.set(column, LANE_COLORS[nextColor.value % LANE_COLORS.length])
+    laneColor.set(column, BRANCH_LANE_COLORS[nextColor.value % BRANCH_LANE_COLORS.length])
     nextColor.value += 1
   }
   return laneColor.get(column)!
+}
+
+export function isMergeCommit(commit: CommitLog): boolean {
+  return commit.parents.length > 1
+}
+
+export function collectRelatedHashes(focusHash: string | null, commits: CommitLog[]): Set<string> | null {
+  if (!focusHash) return null
+
+  const known = new Set(commits.map((commit) => commit.hash))
+  if (!known.has(focusHash)) return null
+
+  const parentsByHash = new Map(commits.map((commit) => [commit.hash, commit.parents]))
+  const childrenByHash = new Map<string, string[]>()
+  for (const commit of commits) {
+    for (const parent of commit.parents) {
+      if (!known.has(parent)) continue
+      const children = childrenByHash.get(parent) ?? []
+      children.push(commit.hash)
+      childrenByHash.set(parent, children)
+    }
+  }
+
+  const related = new Set<string>([focusHash])
+
+  const ancestorStack = [...(parentsByHash.get(focusHash) ?? [])]
+  while (ancestorStack.length > 0) {
+    const hash = ancestorStack.pop()!
+    if (related.has(hash) || !known.has(hash)) continue
+    related.add(hash)
+    ancestorStack.push(...(parentsByHash.get(hash) ?? []))
+  }
+
+  const descendantStack = [...(childrenByHash.get(focusHash) ?? [])]
+  while (descendantStack.length > 0) {
+    const hash = descendantStack.pop()!
+    if (related.has(hash) || !known.has(hash)) continue
+    related.add(hash)
+    descendantStack.push(...(childrenByHash.get(hash) ?? []))
+  }
+
+  return related
+}
+
+export function isPathHighlighted(path: GraphPath, focus: Set<string> | null): boolean {
+  if (!focus) return true
+  return focus.has(path.fromHash) && focus.has(path.toHash)
 }
 
 export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
@@ -123,12 +173,16 @@ export function layoutCommitGraph(commits: CommitLog[]): CommitGraphLayout {
         paths.push({
           d: `M ${x1} ${y1} L ${x2} ${y2}`,
           color: parentColor,
+          fromHash: commit.hash,
+          toHash: parentHash,
         })
       } else {
         const branchY = y1 + GRAPH_ROW_HEIGHT / 2
         paths.push({
           d: `M ${x1} ${y1} L ${x1} ${branchY} L ${x2} ${branchY} L ${x2} ${y2}`,
           color: parentColor,
+          fromHash: commit.hash,
+          toHash: parentHash,
         })
       }
     }
@@ -149,6 +203,18 @@ export function shortHash(hash: string): string {
 export function formatCommitDate(date: string): string {
   const parsed = new Date(date)
   if (Number.isNaN(parsed.getTime())) return date
+
+  const diffMs = Date.now() - parsed.getTime()
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days} 天前`
+
   return parsed.toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -156,3 +222,5 @@ export function formatCommitDate(date: string): string {
     minute: '2-digit',
   })
 }
+
+export const HISTORY_VIEW_STORAGE_KEY = 'gitwave-history-view'

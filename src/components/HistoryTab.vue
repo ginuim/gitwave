@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { User, CalendarDays, Hash, Loader2, List, GitBranch } from 'lucide-vue-next'
+import { ref, watch } from 'vue'
+import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge } from 'lucide-vue-next'
 import type { CommitLog } from '../types'
 import CommitGraphView from './CommitGraphView.vue'
-import { shortHash, formatCommitDate } from '../utils/commitGraph'
+import {
+  shortHash,
+  formatCommitDate,
+  isMergeCommit,
+  HISTORY_VIEW_STORAGE_KEY,
+} from '../utils/commitGraph'
 
 defineProps<{
   logs: CommitLog[]
@@ -21,8 +26,25 @@ const emit = defineEmits<{
   loadMore: []
 }>()
 
-const viewMode = ref<'list' | 'graph'>('list')
+function readStoredViewMode(): 'list' | 'graph' {
+  try {
+    const stored = localStorage.getItem(HISTORY_VIEW_STORAGE_KEY)
+    return stored === 'graph' ? 'graph' : 'list'
+  } catch {
+    return 'list'
+  }
+}
+
+const viewMode = ref<'list' | 'graph'>(readStoredViewMode())
 const scrollRoot = ref<HTMLElement | null>(null)
+
+watch(viewMode, (mode) => {
+  try {
+    localStorage.setItem(HISTORY_VIEW_STORAGE_KEY, mode)
+  } catch {
+    // ignore storage errors
+  }
+})
 
 function onScroll(event: Event) {
   const target = event.target as HTMLElement
@@ -41,24 +63,24 @@ function onScroll(event: Event) {
       <div class="flex items-center gap-2 min-w-0">
         <div class="flex items-center rounded-[var(--radius)] border border-[--border-color] overflow-hidden shrink-0">
           <button
-            class="px-2 py-1 text-xs transition-colors cursor-pointer"
+            class="inline-flex items-center gap-1 px-2 py-1 text-xs transition-colors cursor-pointer"
             :class="viewMode === 'list'
               ? 'bg-[--accent] text-white'
               : 'text-[--text-secondary] hover:text-[--text-primary]'"
-            title="列表"
             @click="viewMode = 'list'"
           >
             <List :size="12" />
+            列表
           </button>
           <button
-            class="px-2 py-1 text-xs transition-colors cursor-pointer border-l border-[--border-color]"
+            class="inline-flex items-center gap-1 px-2 py-1 text-xs transition-colors cursor-pointer border-l border-[--border-color]"
             :class="viewMode === 'graph'
               ? 'bg-[--accent] text-white'
               : 'text-[--text-secondary] hover:text-[--text-primary]'"
-            title="Graph"
             @click="viewMode = 'graph'"
           >
             <GitBranch :size="12" />
+            分支图
           </button>
         </div>
         <button
@@ -77,6 +99,13 @@ function onScroll(event: Event) {
           @click="emit('updateFilter', 'all')"
         >全部</button>
       </div>
+    </div>
+
+    <div
+      v-if="viewMode === 'graph' && logs.length > 0"
+      class="px-2.5 py-1.5 text-[10px] leading-relaxed text-[--text-secondary] border-b border-[--border-color] bg-[--bg-secondary]"
+    >
+      竖线表示提交链，线条汇合为合并。悬停或选中某条提交可高亮其上下游路径。
     </div>
 
     <div v-if="loading && logs.length === 0" class="flex items-center justify-center py-2.5 text-[--text-secondary]">
@@ -103,6 +132,13 @@ function onScroll(event: Event) {
           <div class="flex items-center gap-1.5 min-w-0">
             <span class="text-xs text-[--text-primary] font-medium leading-relaxed truncate">{{ log.message }}</span>
             <span
+              v-if="isMergeCommit(log)"
+              class="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-amber-500/15 text-amber-600 dark:text-amber-400"
+            >
+              <GitMerge :size="9" />
+              合并
+            </span>
+            <span
               v-for="ref in log.refs"
               :key="ref"
               class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent]"
@@ -117,7 +153,7 @@ function onScroll(event: Event) {
               <User :size="10" />
               {{ log.author }}
             </span>
-            <span class="flex items-center gap-1">
+            <span class="flex items-center gap-1" :title="log.date">
               <CalendarDays :size="10" />
               {{ formatCommitDate(log.date) }}
             </span>
