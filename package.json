@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test:unit": "vitest run",
     "preview": "vite preview",
     "icons": "bash scripts/gen-tauri-icon.sh",
     "tauri": "tauri"
@@ -27,6 +28,7 @@
     "tailwindcss": "^3.4.19",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
+    "vitest": "^4.1.7",
     "vue-tsc": "^2.1.10"
   }
 }

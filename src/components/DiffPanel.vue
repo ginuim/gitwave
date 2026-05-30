@@ -3,6 +3,20 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { ChevronDown, ChevronRight, FileCode, FilePlus, Undo2, User, CalendarDays } from 'lucide-vue-next'
 import { diffShowsNewFile } from '../utils/gitStatus'
+import {
+  buildPatchForSegment,
+  buildPatchForSelection,
+  getHunkBodySegments,
+  lineKeysInChangeSegment,
+  parseDiffSections,
+  type DiffHunk,
+  type HunkBodySegment,
+} from '../utils/diffPatch'
+import {
+  applyLineSelectionClick,
+  lineRangeSelection,
+  type SelectableLineRef,
+} from '../utils/diffLineSelection'
 
 const props = defineProps<{
   diffText: string
@@ -28,29 +42,6 @@ const emit = defineEmits<{
   revertPatch: [patch: string, isStaged: boolean]
 }>()
 
-interface DiffLine {
-  /** `\ No newline at end of file`：不计入 @@ 行数，否则 `git apply` 会报 corrupt patch */
-  type: 'header' | 'added' | 'removed' | 'context' | 'noNewline'
-  content: string
-  /** Unique id for line-selection tracking */
-  id: string
-}
-
-interface HunkInfo {
-  header: string   // e.g. "@@ -1,5 +1,7 @@"
-  lines: DiffLine[]
-  /** Per-line file line numbers parsed from @@ header; null means "no number" (e.g. header row) */
-  lineNums: { old: number | null; new: number | null }[]
-  /** 原始 hunk 文本（与 git diff 输出一致，供 apply/revert 使用） */
-  rawText: string
-}
-
-interface FileDiffSection {
-  fileName: string
-  diffPrefix: string   // "diff --git a/path b/path\n--- a/path\n+++ b/path"
-  hunks: HunkInfo[]
-}
-
 // Collapsed state per file section (indexed by section index in sections array)
 const collapsedSections = ref<Record<number, boolean>>({})
 function isSectionCollapsed(idx: number): boolean {
@@ -74,6 +65,7 @@ function toggleHunk(sectionIdx: number, hunkIdx: number) {
 const selectedLineIds = ref<Set<string>>(new Set())
 /** Anchor for Shift+click range (last non-shift gutter click) */
 const anchorLineId = ref<string | null>(null)
+const isDraggingLineSelection = ref(false)
 
 // ── Commit info ──
 
@@ -118,110 +110,7 @@ const commitInfo = computed((): CommitInfo | null => {
 
 // ── Parse sections + hunks ──
 
-let lineIdCounter = 0
-function nextLineId(): string {
-  return `l${lineIdCounter++}`
-}
-
-const sections = computed((): FileDiffSection[] => {
-  const text = props.diffText
-  if (!text) return []
-
-  // Find start of actual diffs
-  const diffStart = text.indexOf('\ndiff --git ')
-  const diffContent = diffStart >= 0 ? text.slice(diffStart + 1) : text
-
-  const rawParts = diffContent.split('\ndiff --git ')
-  const result: FileDiffSection[] = []
-
-  lineIdCounter = 0
-
-  for (let idx = 0; idx < rawParts.length; idx++) {
-    const part = idx === 0 ? rawParts[0] : rawParts[idx]
-    if (!part.trim()) continue
-
-    const fullText = idx === 0 ? part : 'diff --git ' + part
-    const allLines = fullText.split('\n')
-
-    // Extract file name from diff --git line
-    let fileName = ''
-    const firstLine = allLines[0]
-    const match = firstLine.match(/diff --git a\/(.+) b\/(.+)/)
-    fileName = match ? (match[2] || match[1]) : (props.fileName || '')
-
-    const diffGitLine = allLines[0]
-    const minusIdx = allLines.findIndex(l => l.startsWith('--- '))
-    const plusIdx = allLines.findIndex(l => l.startsWith('+++ '))
-    const metaLines = minusIdx > 1 ? allLines.slice(1, minusIdx) : []
-    const minusLine = minusIdx >= 0 ? allLines[minusIdx] : `--- a/${fileName}`
-    const plusLine = plusIdx >= 0 ? allLines[plusIdx] : `+++ b/${fileName}`
-    const diffPrefix = [diffGitLine, ...metaLines, minusLine, plusLine].join('\n')
-
-    // Find all @@ lines
-    const hunkStartIndices: number[] = []
-    for (let i = 0; i < allLines.length; i++) {
-      if (allLines[i].startsWith('@@')) {
-        hunkStartIndices.push(i)
-      }
-    }
-
-    if (hunkStartIndices.length === 0) continue
-
-    const hunks: HunkInfo[] = []
-    for (let h = 0; h < hunkStartIndices.length; h++) {
-      const start = hunkStartIndices[h]
-      const end = h + 1 < hunkStartIndices.length ? hunkStartIndices[h + 1] : allLines.length
-
-      const hunkLines: DiffLine[] = []
-      for (let li = start; li < end; li++) {
-        const line = allLines[li]
-        let type: DiffLine['type']
-        if (line.startsWith('@@')) type = 'header'
-        else if (line.startsWith('+')) type = 'added'
-        else if (line.startsWith('-')) type = 'removed'
-        else if (line.startsWith('\\')) type = 'noNewline'
-        else type = 'context'
-
-        hunkLines.push({ type, content: line, id: nextLineId() })
-      }
-
-      // Compute per-line file line numbers from @@ header
-      const headerLine = allLines[start]
-      const headerMatch = headerLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
-      const lineNums: HunkInfo['lineNums'] = []
-      let oldLine = headerMatch ? parseInt(headerMatch[1]) : 1
-      let newLine = headerMatch ? parseInt(headerMatch[2]) : 1
-      for (const dl of hunkLines) {
-        if (dl.type === 'header' || dl.type === 'noNewline') {
-          lineNums.push({ old: null, new: null })
-        } else if (dl.type === 'context') {
-          lineNums.push({ old: oldLine, new: newLine })
-          oldLine++; newLine++
-        } else if (dl.type === 'added') {
-          lineNums.push({ old: null, new: newLine })
-          newLine++
-        } else {
-          lineNums.push({ old: oldLine, new: null })
-          oldLine++
-        }
-      }
-
-      const rawText = allLines.slice(start, end).join('\n') + '\n'
-      hunks.push({
-        header: allLines[start],
-        lines: hunkLines,
-        lineNums,
-        rawText,
-      })
-    }
-
-    if (hunks.length > 0) {
-      result.push({ fileName, diffPrefix, hunks })
-    }
-  }
-
-  return result
-})
+const sections = computed(() => parseDiffSections(props.diffText, props.fileName))
 
 const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|ico)$/i
 
@@ -342,105 +231,6 @@ watch(
 
 // ── Stage helpers ──
 
-/** Build a full patch string for one hunk（使用 git 原始 hunk 文本） */
-function hunkPatch(section: FileDiffSection, hunk: HunkInfo): string {
-  return `${section.diffPrefix}\n${hunk.rawText}`
-}
-
-/**
- * Build one filtered hunk containing only selected lines.
- * - Selected `+` lines -> kept as added
- * - Selected `-` lines -> kept as removed
- * - Non-selected `-` lines -> converted to context (no-op for staging)
- * - Non-selected `+` lines -> omitted entirely
- * - `@@` header line counts recalculated to match
- */
-/**
- * 构造只包含 selectedIds 所选行的单个 hunk patch 文本。
- *
- * forRevert=false（staging，正向 apply --cached）：
- *   - 未选中 `+` → 省略（不 stage）
- *   - 未选中 `-` → 转为 context（行存在于 index，不动它）
- *
- * forRevert=true（revert，反向 apply -R 作用于工作区）：
- *   - 未选中 `+` → 转为 context（行存在于工作区，不动它）
- *   - 未选中 `-` → 省略（行不存在于工作区，若转成 context 则 git apply -R 找不到它）
- */
-function buildFilteredHunk(hunk: HunkInfo, selectedIds: Set<string>, forRevert = false): string | null {
-  const contentLines = hunk.lines.slice(1)  // skip the @@ header
-
-  const headerText = hunk.lines[0].content
-  const headerMatch = headerText.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
-  if (!headerMatch) return hunk.lines.map(l => l.content).join('\n') + '\n'
-
-  const origStart = parseInt(headerMatch[1])
-  const newStart = parseInt(headerMatch[3])
-
-  // Preserve the optional context suffix (e.g., " func() {")
-  const secondAt = headerText.indexOf('@@', headerText.indexOf('@@') + 2)
-  const headerSuffix = secondAt >= 0 ? headerText.slice(secondAt + 2).trim() : ''
-
-  const keptLines: string[] = []
-  let origCount = 0
-  let newCount = 0
-  let skipNextNoNewline = false
-
-  for (const line of contentLines) {
-    if (line.type === 'noNewline') {
-      if (!skipNextNoNewline) keptLines.push(line.content)
-      skipNextNoNewline = false
-      continue
-    }
-
-    if (line.type === 'added' && !selectedIds.has(line.id)) {
-      if (forRevert) {
-        // 未选中 + 存在于工作区，保留为 context，不被 revert
-        keptLines.push(' ' + line.content.slice(1))
-        origCount++
-        newCount++
-        skipNextNoNewline = false
-      } else {
-        skipNextNoNewline = true
-      }
-      continue
-    }
-    skipNextNoNewline = false
-
-    if (line.type === 'context') {
-      keptLines.push(line.content)
-      origCount++
-      newCount++
-    } else if (line.type === 'added') {
-      keptLines.push(line.content)
-      newCount++
-    } else if (line.type === 'removed') {
-      if (selectedIds.has(line.id)) {
-        keptLines.push(line.content)
-        origCount++
-      } else if (forRevert) {
-        // 未选中 - 不存在于工作区，省略（转成 context 会导致 git apply -R 找不到该行）
-        skipNextNoNewline = true
-      } else {
-        // staging：未选中 - 存在于 index，转为 context 保留
-        keptLines.push(' ' + line.content.slice(1))
-        origCount++
-        newCount++
-      }
-    }
-  }
-
-  const hasWork = contentLines.some(l => (l.type === 'added' || l.type === 'removed') && selectedIds.has(l.id))
-  if (!hasWork) return null
-
-  const newHeader = `@@ -${origStart},${origCount} +${newStart},${newCount} @@${headerSuffix ? ' ' + headerSuffix : ''}`
-  return [newHeader, ...keptLines].join('\n') + '\n'
-}
-
-function buildFilteredPatch(section: FileDiffSection, hunk: HunkInfo, selectedIds: Set<string>, forRevert = false): string | null {
-  const body = buildFilteredHunk(hunk, selectedIds, forRevert)
-  return body ? `${section.diffPrefix}\n${body}` : null
-}
-
 /** Stage the entire file */
 function stageEntireFile(path: string) {
   emit('stageFile', path)
@@ -450,89 +240,17 @@ function revertEntireFile(path: string) {
   emit('revertFile', path, props.workspaceIsStaged)
 }
 
-/** Stage one hunk */
-function stageHunk(sectionIdx: number, hunkIdx: number) {
-  const section = sections.value[sectionIdx]
-  const hunk = section.hunks[hunkIdx]
-  const patch = hunkPatch(section, hunk)
-  emit('stagePatch', patch)
-}
-
-function revertHunk(sectionIdx: number, hunkIdx: number) {
-  const section = sections.value[sectionIdx]
-  const hunk = section.hunks[hunkIdx]
-  const patch = hunkPatch(section, hunk)
-  emit('revertPatch', patch, props.workspaceIsStaged)
-}
-
-/** Stage the hunks containing selected lines (only selected lines within each) */
-function stageSelectedLines() {
-  const ids = selectedLineIds.value
-  if (ids.size === 0) return
-
-  const patchParts: string[] = []
-  for (const section of sections.value) {
-    const hunkBodies: string[] = []
-    for (const hunk of section.hunks) {
-      const hasSelected = hunk.lines.some(l => ids.has(l.id))
-      if (!hasSelected) continue
-
-      const body = buildFilteredHunk(hunk, ids)
-      if (body) hunkBodies.push(body)
-    }
-
-    if (hunkBodies.length > 0) {
-      patchParts.push(`${section.diffPrefix}\n${hunkBodies.join('')}`)
-    }
-  }
-
-  if (patchParts.length > 0) {
-    emit('stagePatch', patchParts.join(''))
-  }
-
-  selectedLineIds.value = new Set()
-  anchorLineId.value = null
-}
-
-function revertSelectedLines() {
-  const ids = selectedLineIds.value
-  if (ids.size === 0) return
-
-  const patchParts: string[] = []
-  for (const section of sections.value) {
-    const hunkBodies: string[] = []
-    for (const hunk of section.hunks) {
-      const hasSelected = hunk.lines.some(l => ids.has(l.id))
-      if (!hasSelected) continue
-
-      const body = buildFilteredHunk(hunk, ids, true)
-      if (body) hunkBodies.push(body)
-    }
-
-    if (hunkBodies.length > 0) {
-      patchParts.push(`${section.diffPrefix}\n${hunkBodies.join('')}`)
-    }
-  }
-
-  if (patchParts.length > 0) {
-    emit('revertPatch', patchParts.join(''), props.workspaceIsStaged)
-  }
-
-  selectedLineIds.value = new Set()
-  anchorLineId.value = null
-}
-
 // ── Line selection + change blocks ──
 
 const selectableFlat = computed(() => {
-  const out: { id: string; si: number; hi: number; li: number }[] = []
+  const out: (SelectableLineRef & { si: number; hi: number; li: number })[] = []
   for (let si = 0; si < sections.value.length; si++) {
     const section = sections.value[si]
     for (let hi = 0; hi < section.hunks.length; hi++) {
       const hunk = section.hunks[hi]
       for (let li = 0; li < hunk.lines.length; li++) {
         const line = hunk.lines[li]
-        if (line.type !== 'header' && line.type !== 'noNewline') out.push({ id: line.id, si, hi, li })
+        if (line.type === 'added' || line.type === 'removed') out.push({ id: line.key, si, hi, li })
       }
     }
   }
@@ -543,48 +261,17 @@ function flatIndexOf(id: string): number {
   return selectableFlat.value.findIndex((x) => x.id === id)
 }
 
-/** Hunk body (after @@): alternate runs of pure +/- vs context; only +/- runs get a stage block. */
-type HunkBodySegment =
-  | { kind: 'changes'; startLi: number; endLi: number }
-  | { kind: 'context'; startLi: number; endLi: number }
-
-function getHunkBodySegments(hunk: HunkInfo): HunkBodySegment[] {
-  const L = hunk.lines
-  const n = L.length
-  if (n <= 1) return []
-  const out: HunkBodySegment[] = []
-  let li = 1
-  while (li < n) {
-    const t = L[li].type
-    if (t === 'added' || t === 'removed') {
-      const start = li
-      while (li < n && (L[li].type === 'added' || L[li].type === 'removed')) li++
-      while (li < n && L[li].type === 'noNewline') li++
-      out.push({ kind: 'changes', startLi: start, endLi: li - 1 })
-    } else {
-      const start = li
-      while (li < n && (L[li].type === 'context' || L[li].type === 'noNewline')) li++
-      out.push({ kind: 'context', startLi: start, endLi: li - 1 })
-    }
-  }
-  return out
+function changeLineIdsInBlock(hunk: DiffHunk, blk: HunkBodySegment): Set<string> {
+  return lineKeysInChangeSegment(hunk, blk)
 }
 
-/** 旧名兼容（缓存 / HMR 仍可能调用）；等价于仅返回连续 +/- 段。 */
-function getChangeBlocksOrFull(hunk: HunkInfo): { startLi: number; endLi: number }[] {
-  return getHunkBodySegments(hunk).filter(
-    (s): s is { kind: 'changes'; startLi: number; endLi: number } => s.kind === 'changes',
-  )
-}
-
-function changeLineIdsInBlock(hunk: HunkInfo, blk: { startLi: number; endLi: number }): Set<string> {
-  const ids = new Set<string>()
-  for (let li = blk.startLi; li <= blk.endLi; li++) {
-    const line = hunk.lines[li]
-    if (!line) continue
-    if (line.type === 'added' || line.type === 'removed') ids.add(line.id)
+function selectedLineIdsInBlock(hunk: DiffHunk, blk: HunkBodySegment): Set<string> {
+  const blockIds = changeLineIdsInBlock(hunk, blk)
+  const selected = new Set<string>()
+  for (const id of selectedLineIds.value) {
+    if (blockIds.has(id)) selected.add(id)
   }
-  return ids
+  return selected
 }
 
 /** 闭区间下标；可选 maxIdx 防止越界。 */
@@ -602,59 +289,73 @@ function liRange(start: number, end: number, maxIdx?: number): number[] {
   return r
 }
 
-function stageChangeBlock(sectionIdx: number, hunkIdx: number, blk: { startLi: number; endLi: number }) {
+function stageChangeBlock(sectionIdx: number, hunkIdx: number, blk: HunkBodySegment) {
   const section = sections.value[sectionIdx]
   const hunk = section.hunks[hunkIdx]
-  const ids = changeLineIdsInBlock(hunk, blk)
-  if (ids.size === 0) return
-  const patch = buildFilteredPatch(section, hunk, ids)
+  const patch = buildPatchForSegment(section, hunk, blk, 'stage')
   if (patch) emit('stagePatch', patch)
 }
 
-function revertChangeBlock(sectionIdx: number, hunkIdx: number, blk: { startLi: number; endLi: number }) {
+function revertChangeBlock(sectionIdx: number, hunkIdx: number, blk: HunkBodySegment) {
   const section = sections.value[sectionIdx]
   const hunk = section.hunks[hunkIdx]
-  const ids = changeLineIdsInBlock(hunk, blk)
-  if (ids.size === 0) return
-  const patch = buildFilteredPatch(section, hunk, ids, true)
+  const patch = buildPatchForSegment(section, hunk, blk, 'revert')
   if (patch) emit('revertPatch', patch, props.workspaceIsStaged)
 }
 
-function onGutterMouseDown(e: MouseEvent, lineId: string) {
+function stageSelectedLinesInBlock(sectionIdx: number, hunkIdx: number, blk: HunkBodySegment) {
+  const section = sections.value[sectionIdx]
+  const hunk = section.hunks[hunkIdx]
+  const ids = selectedLineIdsInBlock(hunk, blk)
+  const patch = buildPatchForSelection([section], ids, 'stage')
+  if (patch) emit('stagePatch', patch)
+  clearLineSelection()
+}
+
+function revertSelectedLinesInBlock(sectionIdx: number, hunkIdx: number, blk: HunkBodySegment) {
+  const section = sections.value[sectionIdx]
+  const hunk = section.hunks[hunkIdx]
+  const ids = selectedLineIdsInBlock(hunk, blk)
+  const patch = buildPatchForSelection([section], ids, 'revert')
+  if (patch) emit('revertPatch', patch, props.workspaceIsStaged)
+  clearLineSelection()
+}
+
+function selectDiffLine(e: MouseEvent, lineId: string) {
   e.stopPropagation()
-  const next = new Set<string>()
-  const flat = selectableFlat.value
-  const cur = flatIndexOf(lineId)
-  if (cur < 0) return
+  e.preventDefault()
+  const result = applyLineSelectionClick({
+    lines: selectableFlat.value,
+    current: selectedLineIds.value,
+    clickedId: lineId,
+    anchorId: anchorLineId.value,
+    shiftKey: e.shiftKey,
+    toggleKey: e.ctrlKey || e.metaKey,
+  })
+  selectedLineIds.value = result.selected
+  anchorLineId.value = result.anchorId
+  isDraggingLineSelection.value = !e.shiftKey && !(e.ctrlKey || e.metaKey)
+}
 
-  if (e.shiftKey && anchorLineId.value != null) {
-    const a = flatIndexOf(anchorLineId.value)
-    if (a >= 0) {
-      const lo = Math.min(a, cur)
-      const hi = Math.max(a, cur)
-      for (let k = lo; k <= hi; k++) next.add(flat[k].id)
-      selectedLineIds.value = next
-      return
-    }
-  }
+function onDiffLineMouseDown(e: MouseEvent, lineId: string | undefined) {
+  if (!lineId || e.button !== 0) return
+  selectDiffLine(e, lineId)
+}
 
-  if (e.ctrlKey || e.metaKey) {
-    for (const id of selectedLineIds.value) next.add(id)
-    if (next.has(lineId)) next.delete(lineId)
-    else next.add(lineId)
-    selectedLineIds.value = next
-    anchorLineId.value = lineId
-    return
-  }
-
-  next.add(lineId)
-  selectedLineIds.value = next
-  anchorLineId.value = lineId
+function onDiffLineMouseEnter(lineId: string | undefined) {
+  if (!lineId || !isDraggingLineSelection.value || anchorLineId.value == null) return
+  selectedLineIds.value = lineRangeSelection(selectableFlat.value, anchorLineId.value, lineId)
 }
 
 function clearLineSelection() {
   selectedLineIds.value = new Set()
   anchorLineId.value = null
+}
+
+watch(() => props.diffText, () => clearLineSelection())
+
+function stopLineSelectionDrag() {
+  isDraggingLineSelection.value = false
 }
 
 function onDiffSurfacePointerDown(e: MouseEvent) {
@@ -686,8 +387,14 @@ function onGlobalKeyDown(e: KeyboardEvent) {
   void navigator.clipboard.writeText(orderedSelectedLinesText())
 }
 
-onMounted(() => window.addEventListener('keydown', onGlobalKeyDown))
-onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeyDown)
+  window.addEventListener('mouseup', stopLineSelectionDrag)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeyDown)
+  window.removeEventListener('mouseup', stopLineSelectionDrag)
+})
 
 </script>
 
@@ -698,29 +405,6 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
       <span v-if="fileName" class="text-[--text-primary] font-medium truncate font-mono-ui min-w-0 flex-1">{{ fileName }}</span>
       <span v-else class="text-[--text-secondary] shrink-0">选择文件查看差异</span>
       <span v-if="sections.length > 1" class="text-[10px] text-[--text-secondary] font-mono-ui shrink-0">{{ sections.length }} 个文件</span>
-      <div
-        v-if="(showHunkRevert || canStage) && selectedLineIds.size > 0"
-        class="ml-auto flex shrink-0 items-center gap-1.5"
-      >
-        <button
-          v-if="showHunkRevert"
-          :disabled="patchStaging"
-          class="flex items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-700 text-white hover:bg-orange-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          @click="revertSelectedLines"
-        >
-          <Undo2 :size="12" />
-          Revert 选中 ({{ selectedLineIds.size }})
-        </button>
-        <button
-          v-if="canStage"
-          :disabled="patchStaging"
-          class="flex items-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700 text-white hover:bg-green-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          @click="stageSelectedLines"
-        >
-          <FilePlus :size="12" />
-          Stage 选中 ({{ selectedLineIds.size }})
-        </button>
-      </div>
     </div>
 
     <!-- Diff content -->
@@ -856,28 +540,6 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                 <ChevronDown v-if="!isHunkCollapsed(si, hi)" :size="12" class="flex-shrink-0 text-[--text-secondary]" />
                 <ChevronRight v-else :size="12" class="flex-shrink-0 text-[--text-secondary]" />
                 <span class="min-w-0 flex-1 truncate text-[10px] font-mono-ui text-[--text-secondary]">{{ hunk.header }}</span>
-                <div class="ml-2 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
-                  <button
-                    v-if="showHunkRevert"
-                    :disabled="patchStaging"
-                    class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-800/50 hover:bg-orange-700 text-orange-200 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                    title="丢弃整个 @@ 块变更"
-                    @click.stop="revertHunk(si, hi)"
-                  >
-                    <Undo2 :size="12" />
-                    Revert 块
-                  </button>
-                  <button
-                    v-if="canStage"
-                    :disabled="patchStaging"
-                    class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-800/50 hover:bg-green-700 text-green-300 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                    title="Stage 整个 @@ 块（含全部子区域）"
-                    @click.stop="stageHunk(si, hi)"
-                  >
-                    <FilePlus :size="12" />
-                    Stage 块
-                  </button>
-                </div>
               </div>
 
               <!-- Hunk lines: @@ header + sub-blocks + gutter selection -->
@@ -897,38 +559,41 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                     class="relative group/diffblk rounded-sm"
                   >
                     <div
-                      v-if="(showHunkRevert || canStage) && changeLineIdsInBlock(hunk, seg).size > 0"
-                      class="absolute right-2.5 top-2.5 z-40 flex items-center gap-1 opacity-0 pointer-events-none group-hover/diffblk:opacity-100 group-hover/diffblk:pointer-events-auto transition-opacity"
+                      v-if="showHunkRevert || canStage"
+                      class="flex min-w-0 items-center gap-2 border-y border-[--border-color] bg-[--bg-secondary] px-2.5 py-1.5 text-[10px] text-[--text-secondary] select-none"
                     >
+                      <span class="min-w-0 flex-1 truncate font-mono-ui">
+                        {{ selectedLineIdsInBlock(hunk, seg).size > 0 ? `已选 ${selectedLineIdsInBlock(hunk, seg).size} 行` : '变更区块' }}
+                      </span>
                       <button
                         v-if="showHunkRevert"
                         :disabled="patchStaging"
                         type="button"
                         class="diff-revert-float flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-orange-700 text-white shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                        title="丢弃本段连续 +/- 行"
+                        :title="selectedLineIdsInBlock(hunk, seg).size > 0 ? '放弃当前区块内选中的行' : '放弃本段连续 +/- 行'"
                         @mousedown.stop
-                        @click.stop="revertChangeBlock(si, hi, seg)"
+                        @click.stop="selectedLineIdsInBlock(hunk, seg).size > 0 ? revertSelectedLinesInBlock(si, hi, seg) : revertChangeBlock(si, hi, seg)"
                       >
                         <Undo2 :size="12" />
-                        Revert
+                        {{ selectedLineIdsInBlock(hunk, seg).size > 0 ? '放弃行' : '放弃区块' }}
                       </button>
                       <button
                         v-if="canStage"
                         :disabled="patchStaging"
                         type="button"
                         class="diff-stage-float flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-green-700 text-white shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                        title="Stage 本段连续 +/- 行"
+                        :title="selectedLineIdsInBlock(hunk, seg).size > 0 ? '暂存当前区块内选中的行' : '暂存本段连续 +/- 行'"
                         @mousedown.stop
-                        @click.stop="stageChangeBlock(si, hi, seg)"
+                        @click.stop="selectedLineIdsInBlock(hunk, seg).size > 0 ? stageSelectedLinesInBlock(si, hi, seg) : stageChangeBlock(si, hi, seg)"
                       >
                         <FilePlus :size="12" />
-                        Stage
+                        {{ selectedLineIdsInBlock(hunk, seg).size > 0 ? '暂存行' : '暂存区块' }}
                       </button>
                     </div>
                     <div
-                      v-for="li in liRange(seg.startLi, seg.endLi, hunk.lines.length - 1)"
-                      :key="`${si}-${hi}-${li}-${hunk.lines[li]?.id ?? 'x'}`"
-                      class="flex transition-colors"
+                      v-for="li in liRange(seg.startLineIndex, seg.endLineIndex, hunk.lines.length - 1)"
+                      :key="`${si}-${hi}-${li}-${hunk.lines[li]?.key ?? 'x'}`"
+                      class="flex transition-colors select-none"
                       :class="{
                         'bg-[--diff-added] hover:bg-green-800/40': hunk.lines[li]?.type === 'added',
                         'bg-[--diff-removed] hover:bg-red-800/40': hunk.lines[li]?.type === 'removed',
@@ -937,38 +602,39 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                         'text-[--text-primary]': hunk.lines[li]?.type === 'context',
                         'text-[--diff-added-text]': hunk.lines[li]?.type === 'added',
                         'text-[--diff-removed-text]': hunk.lines[li]?.type === 'removed',
-                        'outline outline-1 outline-green-500/60 -outline-offset-1': hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id),
+                        'bg-blue-600/25 hover:bg-blue-600/35 text-blue-100 outline outline-1 outline-blue-400/70 -outline-offset-1': hunk.lines[li] && selectedLineIds.has(hunk.lines[li].key),
                       }"
+                      @mousedown="onDiffLineMouseDown($event, hunk.lines[li]?.key)"
+                      @mouseenter="onDiffLineMouseEnter(hunk.lines[li]?.key)"
                     >
                       <div
                         v-if="hunk.lines[li]?.type !== 'header'"
                         class="diff-select-zone flex flex-shrink-0 cursor-pointer select-none"
-                        @mousedown="hunk.lines[li] && onGutterMouseDown($event, hunk.lines[li].id)"
                       >
                         <div
                           class="flex-shrink-0 w-3 flex items-center justify-center text-[10px]"
-                          :class="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? 'text-green-400' : 'text-transparent'"
-                        >{{ hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? '✓' : '○' }}</div>
-                        <div class="flex-shrink-0 w-7 text-right pr-1 text-[--text-secondary]/35">{{ hunk.lineNums[li]?.old ?? '' }}</div>
-                        <div class="flex-shrink-0 w-7 text-right pr-2.5 text-[--text-secondary]/50">{{ hunk.lineNums[li]?.new ?? '' }}</div>
+                          :class="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].key) ? 'text-blue-300' : 'text-transparent'"
+                        >{{ hunk.lines[li] && selectedLineIds.has(hunk.lines[li].key) ? '✓' : '○' }}</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-1 text-[--text-secondary]/35">{{ hunk.lines[li]?.oldLineNumber ?? '' }}</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-2.5 text-[--text-secondary]/50">{{ hunk.lines[li]?.newLineNumber ?? '' }}</div>
                       </div>
                       <template v-else>
                         <div class="flex-shrink-0 w-3" />
                         <div class="flex-shrink-0 w-7 pr-1 select-none" />
                         <div class="flex-shrink-0 w-7 pr-2.5 select-none" />
                       </template>
-                      <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0 select-text">{{ hunk.lines[li]?.content }}</span>
+                      <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0">{{ hunk.lines[li]?.content }}</span>
                     </div>
-                    <!-- 叠在行上方：不挡点击/划选；hover 整块时可见描边 + 淡绿罩 -->
+                    <!-- 叠在行上方：不挡点击/划选；hover 整块时可见描边 + 淡蓝罩 -->
                     <div
                       aria-hidden="true"
-                      class="pointer-events-none absolute inset-0 z-[1] rounded-sm border-2 border-transparent opacity-0 transition-[opacity,border-color,background-color] duration-150 group-hover/diffblk:border-green-500/70 group-hover/diffblk:bg-green-500/15 group-hover/diffblk:opacity-100"
+                      class="pointer-events-none absolute inset-0 z-[1] rounded-sm border-2 border-transparent opacity-0 transition-[opacity,border-color,background-color] duration-150 group-hover/diffblk:border-blue-500/60 group-hover/diffblk:bg-blue-500/10 group-hover/diffblk:opacity-100"
                     />
                   </div>
                   <template v-else>
                     <div
-                      v-for="li in liRange(seg.startLi, seg.endLi, hunk.lines.length - 1)"
-                      :key="`${si}-${hi}-${li}-${hunk.lines[li]?.id ?? 'x'}`"
+                      v-for="li in liRange(seg.startLineIndex, seg.endLineIndex, hunk.lines.length - 1)"
+                      :key="`${si}-${hi}-${li}-${hunk.lines[li]?.key ?? 'x'}`"
                       class="flex transition-colors"
                       :class="{
                         'bg-[--diff-added] hover:bg-green-800/40': hunk.lines[li]?.type === 'added',
@@ -978,20 +644,18 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown))
                         'text-[--text-primary]': hunk.lines[li]?.type === 'context',
                         'text-[--diff-added-text]': hunk.lines[li]?.type === 'added',
                         'text-[--diff-removed-text]': hunk.lines[li]?.type === 'removed',
-                        'outline outline-1 outline-green-500/60 -outline-offset-1': hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id),
+                        'outline outline-1 outline-green-500/60 -outline-offset-1': hunk.lines[li] && selectedLineIds.has(hunk.lines[li].key),
                       }"
                     >
                       <div
                         v-if="hunk.lines[li]?.type !== 'header'"
-                        class="diff-select-zone flex flex-shrink-0 cursor-pointer select-none"
-                        @mousedown="hunk.lines[li] && onGutterMouseDown($event, hunk.lines[li].id)"
+                        class="flex flex-shrink-0 select-none"
                       >
                         <div
-                          class="flex-shrink-0 w-3 flex items-center justify-center text-[10px]"
-                          :class="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? 'text-green-400' : 'text-transparent'"
-                        >{{ hunk.lines[li] && selectedLineIds.has(hunk.lines[li].id) ? '✓' : '○' }}</div>
-                        <div class="flex-shrink-0 w-7 text-right pr-1 text-[--text-secondary]/35">{{ hunk.lineNums[li]?.old ?? '' }}</div>
-                        <div class="flex-shrink-0 w-7 text-right pr-2.5 text-[--text-secondary]/50">{{ hunk.lineNums[li]?.new ?? '' }}</div>
+                          class="flex-shrink-0 w-3 flex items-center justify-center text-[10px] text-transparent"
+                        >○</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-1 text-[--text-secondary]/35">{{ hunk.lines[li]?.oldLineNumber ?? '' }}</div>
+                        <div class="flex-shrink-0 w-7 text-right pr-2.5 text-[--text-secondary]/50">{{ hunk.lines[li]?.newLineNumber ?? '' }}</div>
                       </div>
                       <template v-else>
                         <div class="flex-shrink-0 w-3" />
