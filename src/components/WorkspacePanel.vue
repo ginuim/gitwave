@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
@@ -31,6 +31,64 @@ const emit = defineEmits<{
   revealError: [message: string]
   openSettings: []
 }>()
+
+// === Commit area resize ===
+const COMMIT_AREA_HEIGHT_KEY = 'gitwave-commit-area-height'
+const DEFAULT_COMMIT_AREA_HEIGHT = 220
+const MIN_COMMIT_AREA_HEIGHT = 140
+const MAX_COMMIT_AREA_HEIGHT = 560
+
+const panelRef = ref<HTMLElement | null>(null)
+const commitAreaHeight = ref(DEFAULT_COMMIT_AREA_HEIGHT)
+
+function clampCommitAreaHeight(height: number): number {
+  const panelMax = panelRef.value
+    ? Math.floor(panelRef.value.clientHeight * 0.65)
+    : MAX_COMMIT_AREA_HEIGHT
+  const max = Math.min(MAX_COMMIT_AREA_HEIGHT, panelMax)
+  return Math.min(max, Math.max(MIN_COMMIT_AREA_HEIGHT, height))
+}
+
+let resizeStartY = 0
+let resizeStartHeight = 0
+let resizeMoveHandler: ((e: MouseEvent) => void) | null = null
+let resizeUpHandler: (() => void) | null = null
+
+function stopCommitAreaResize() {
+  if (resizeMoveHandler) {
+    document.removeEventListener('mousemove', resizeMoveHandler)
+    resizeMoveHandler = null
+  }
+  if (resizeUpHandler) {
+    document.removeEventListener('mouseup', resizeUpHandler)
+    resizeUpHandler = null
+  }
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
+
+function onCommitAreaResizeStart(e: MouseEvent) {
+  e.preventDefault()
+  resizeStartY = e.clientY
+  resizeStartHeight = commitAreaHeight.value
+  stopCommitAreaResize()
+
+  resizeMoveHandler = (ev: MouseEvent) => {
+    const delta = resizeStartY - ev.clientY
+    commitAreaHeight.value = clampCommitAreaHeight(resizeStartHeight + delta)
+  }
+  resizeUpHandler = () => {
+    stopCommitAreaResize()
+    localStorage.setItem(COMMIT_AREA_HEIGHT_KEY, String(commitAreaHeight.value))
+  }
+
+  document.body.style.cursor = 'ns-resize'
+  document.body.style.userSelect = 'none'
+  document.addEventListener('mousemove', resizeMoveHandler)
+  document.addEventListener('mouseup', resizeUpHandler)
+}
+
+onUnmounted(stopCommitAreaResize)
 
 // === Manual commit state ===
 const commitMessage = ref('')
@@ -91,6 +149,11 @@ const hasStagedFiles = computed(() => props.statuses.some(f => f.isStaged))
 const commitPrompt = computed(() => aiSettings.value?.prompts?.commitPrompt || '')
 
 onMounted(async () => {
+  const stored = localStorage.getItem(COMMIT_AREA_HEIGHT_KEY)
+  if (stored) {
+    const parsed = Number(stored)
+    if (!Number.isNaN(parsed)) commitAreaHeight.value = clampCommitAreaHeight(parsed)
+  }
   if (props.repoPath) await loadAiData()
 })
 
@@ -420,7 +483,7 @@ function subtreeBadge(path: string): string | null {
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-[--bg-secondary] min-w-[320px]">
+  <div ref="panelRef" class="h-full flex flex-col bg-[--bg-secondary] min-w-[320px]">
     <!-- Unstaged Changes -->
     <div class="flex-1 overflow-y-auto min-h-0">
       <div class="flex items-center justify-between gap-2 px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10 min-w-0">
@@ -608,18 +671,28 @@ function subtreeBadge(path: string): string | null {
       </div>
     </div>
 
+    <!-- Unified Commit Area resize handle -->
+    <div
+      class="flex-shrink-0 h-[3px] cursor-ns-resize bg-[--border-color] hover:bg-[--accent] transition-colors"
+      title="拖拽调整提交区高度"
+      @mousedown="onCommitAreaResizeStart"
+    />
+
     <!-- Unified Commit Area -->
-    <div class="border-t border-[--border-color] bg-[--bg-secondary] flex-shrink-0">
+    <div
+      class="bg-[--bg-secondary] flex-shrink-0 flex flex-col overflow-hidden"
+      :style="{ height: `${commitAreaHeight}px` }"
+    >
       <div
         v-if="aiLoading"
-        class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary] text-[10px] text-[--text-secondary]"
+        class="flex-shrink-0 flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary] text-[10px] text-[--text-secondary]"
       >
         <Loader2 :size="12" class="animate-spin text-[--accent] flex-shrink-0" />
         <span>正在加载 AI 设置与 Staged 差异…</span>
       </div>
       <template v-else-if="allModels.length > 0">
         <!-- Model selector + Generate button -->
-        <div class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary]">
+        <div class="flex-shrink-0 flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary]">
           <Sparkles :size="14" class="text-[--accent] flex-shrink-0" />
           <div class="flex-1 min-w-0 flex items-stretch gap-1.5">
             <!-- Single model: show as label; multiple: show as dropdown -->
@@ -661,14 +734,14 @@ function subtreeBadge(path: string): string | null {
         <!-- Hint: no staged files -->
         <div
           v-if="!hasStagedFiles"
-          class="px-2.5 py-1 text-[10px] text-[--text-secondary] bg-[--bg-tertiary] border-b border-[--border-color]"
+          class="flex-shrink-0 px-2.5 py-1 text-[10px] text-[--text-secondary] bg-[--bg-tertiary] border-b border-[--border-color]"
         >
           请先在文件列表中 Stage 文件后再使用 AI 生成提交信息
         </div>
       </template>
       <div
         v-else
-        class="flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary] text-xs text-[--text-secondary]"
+        class="flex-shrink-0 flex items-center gap-2 px-2.5 py-1.5 border-b border-[--border-color] bg-[--bg-tertiary] text-xs text-[--text-secondary]"
       >
         <Sparkles :size="14" class="text-[--accent] flex-shrink-0 opacity-60" />
         <span class="flex-1 min-w-0 leading-relaxed">未配置模型与供应商时无法使用 AI 生成提交说明，请在设置中添加。</span>
@@ -683,8 +756,8 @@ function subtreeBadge(path: string): string | null {
       </div>
 
       <!-- Commit message input + button -->
-      <div class="p-2.5">
-        <div v-if="aiError" class="mb-2 flex items-start gap-1.5 p-2 rounded-[var(--radius)] bg-red-900/30 border border-red-800">
+      <div class="flex-1 min-h-0 flex flex-col p-2.5">
+        <div v-if="aiError" class="mb-2 flex-shrink-0 flex items-start gap-1.5 p-2 rounded-[var(--radius)] bg-red-900/30 border border-red-800">
           <AlertCircle :size="13" class="text-red-400 flex-shrink-0 mt-0.5" />
           <span class="text-[11px] text-red-300 break-words flex-1">{{ aiError }}</span>
           <button class="flex-shrink-0 p-0.5 rounded text-red-400 hover:text-red-200 transition-colors cursor-pointer" @click="aiError = null">
@@ -693,14 +766,13 @@ function subtreeBadge(path: string): string | null {
         </div>
         <textarea
           v-model="commitMessage"
-          class="w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-tertiary] border border-[--border-color] text-xs text-[--text-primary] placeholder-[--text-secondary] resize-none outline-none focus:border-[--accent] transition-colors font-mono-ui leading-relaxed"
-          rows="3"
+          class="flex-1 min-h-[60px] w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-tertiary] border border-[--border-color] text-xs text-[--text-primary] placeholder-[--text-secondary] resize-none outline-none focus:border-[--accent] transition-colors font-mono-ui leading-relaxed"
           :placeholder="generating ? 'AI 正在生成提交信息...' : '提交信息...'"
           @keydown.meta.enter="handleCommit"
           @keydown.ctrl.enter="handleCommit"
         />
         <button
-          class="mt-2.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          class="mt-2.5 flex-shrink-0 w-full flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           :disabled="!commitMessage.trim() || commitLoading || generating"
           @click="handleCommit"
         >
