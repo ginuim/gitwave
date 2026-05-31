@@ -279,3 +279,77 @@ export function buildPatchForSegment(
 ): string | null {
   return buildPatchForSelection([section], lineKeysInChangeSegment(hunk, segment), mode)
 }
+
+function serializeHunkBody(lines: DiffLine[]): string | null {
+  const headerLine = lines.find((line) => line.type === 'header')
+  if (!headerLine) return null
+
+  const headerInfo = parseHunkHeader(headerLine.content)
+  const bodyLines: string[] = []
+  let oldCount = 0
+  let newCount = 0
+  let hasChange = false
+
+  for (const line of lines) {
+    if (line.type === 'header') continue
+    if (line.type === 'context') {
+      oldCount++
+      newCount++
+      bodyLines.push(line.content)
+    } else if (line.type === 'added') {
+      newCount++
+      hasChange = true
+      bodyLines.push(line.content)
+    } else if (line.type === 'removed') {
+      oldCount++
+      hasChange = true
+      bodyLines.push(line.content)
+    } else if (line.type === 'noNewline') {
+      bodyLines.push(line.content)
+    }
+  }
+
+  if (!hasChange || (oldCount === 0 && newCount === 0)) return null
+
+  const suffix = hunkHeaderSuffix(headerLine.content)
+  const oldStart = headerInfo?.oldStart ?? 1
+  const newStart = headerInfo?.newStart ?? 1
+  const header = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${suffix ? ` ${suffix}` : ''}`
+  return `${[header, ...bodyLines].join('\n')}\n`
+}
+
+/** revert 后乐观更新 diff 文本：移除将被丢弃的 +/- 行 */
+export function applyOptimisticRevertToDiffText(
+  diffText: string,
+  fileName: string | null,
+  revertedKeys: Set<string>,
+): string {
+  if (!diffText || revertedKeys.size === 0) return diffText
+
+  const diffStart = diffText.indexOf('\ndiff --git ')
+  const prefix = diffStart >= 0 ? diffText.slice(0, diffStart + 1) : ''
+  const sections = parseDiffSections(diffText, fileName)
+  const patchParts: string[] = []
+
+  for (const section of sections) {
+    const hunkTexts: string[] = []
+    for (const hunk of section.hunks) {
+      const remaining = hunk.lines.filter(
+        (line) =>
+          (line.type !== 'added' && line.type !== 'removed') ||
+          !revertedKeys.has(line.key),
+      )
+      const body = serializeHunkBody(remaining)
+      if (body) hunkTexts.push(body)
+    }
+    if (hunkTexts.length > 0) {
+      patchParts.push(`${section.diffPrefix}\n${hunkTexts.join('')}`)
+    }
+  }
+
+  const newDiff = patchParts.join('')
+  if (!newDiff) {
+    return prefix.trimEnd()
+  }
+  return prefix + newDiff
+}

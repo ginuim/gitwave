@@ -1,0 +1,1389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitWave — 为开发者打造的桌面 Git 客户端</title>
+  <meta name="description" content="GitWave 是基于 Tauri 2 的桌面 Git 客户端。三栏布局、可视化提交图、行级 Stage、AI 提交信息，本地 git CLI 驱动。">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --canvas: #0a0a0a;
+      --canvas-soft: #141414;
+      --canvas-softer: #1a1a1a;
+      --surface-elevated: #282828;
+      --surface-pressed: #333333;
+      --ink: #ffffff;
+      --body: #9a9a9a;
+      --mute: #6e6e6e;
+      --hairline: #222222;
+      --hairline-mid: #4b4b4b;
+      --primary: #ffffff;
+      --on-primary: #000000;
+      --accent: #22d3ee;
+      --accent-emerald: #34d399;
+      --accent-violet: #a78bfa;
+      --diff-add: #163816;
+      --diff-add-text: #81c784;
+      --diff-remove: #3a1616;
+      --diff-remove-text: #ef9a9a;
+      --radius-xl: 16px;
+      --radius-lg: 12px;
+      --radius-md: 8px;
+      --radius-pill: 999px;
+      --shadow-card: rgba(0, 0, 0, 0.4) 0px 4px 24px 0px;
+      --shadow-elevated: rgba(0, 0, 0, 0.5) 0px 8px 32px 0px;
+      --font-display: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-text: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --container: 1200px;
+      --nav-height: 64px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-text);
+      background: var(--canvas);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .container {
+      max-width: var(--container);
+      margin: 0 auto;
+      padding: 0 32px;
+    }
+
+    /* ─── Nav ─── */
+    .nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      height: var(--nav-height);
+      background: rgba(10, 10, 10, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .nav-inner {
+      max-width: var(--container);
+      margin: 0 auto;
+      padding: 0 32px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .nav-logo svg { flex-shrink: 0; }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--body);
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--ink); }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: var(--font-text);
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 20px;
+      padding: 10px 20px;
+      border-radius: var(--radius-pill);
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn:hover { opacity: 0.9; }
+    .btn:active { transform: scale(0.98); }
+
+    .btn-primary {
+      background: var(--primary);
+      color: var(--on-primary);
+    }
+
+    .btn-secondary {
+      background: var(--canvas-soft);
+      color: var(--ink);
+      border: 1px solid var(--hairline-mid);
+    }
+
+    .btn-subtle {
+      background: var(--surface-elevated);
+      color: var(--ink);
+    }
+
+    .btn-large {
+      font-size: 16px;
+      padding: 14px 28px;
+    }
+
+    .nav-toggle {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--ink);
+      cursor: pointer;
+      padding: 8px;
+    }
+
+    /* ─── Hero ─── */
+    .hero {
+      padding: calc(var(--nav-height) + 80px) 0 64px;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 800px;
+      height: 500px;
+      background: radial-gradient(ellipse, rgba(34, 211, 238, 0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-eyebrow {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      font-family: var(--font-display);
+      font-size: clamp(36px, 5vw, 52px);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+      max-width: 820px;
+      margin: 0 auto 24px;
+    }
+
+    .hero-sub {
+      font-size: 18px;
+      line-height: 1.5;
+      color: var(--body);
+      max-width: 560px;
+      margin: 0 auto 36px;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 64px;
+    }
+
+    .hero-actions .arrow { opacity: 0.6; }
+
+    /* ─── Product Mock ─── */
+    .mock-wrapper {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 0 16px;
+    }
+
+    .mock-frame {
+      background: var(--canvas-soft);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+      box-shadow: var(--shadow-elevated);
+    }
+
+    .mock-titlebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--canvas-softer);
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .mock-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .mock-dot.red { background: #ff5f57; }
+    .mock-dot.yellow { background: #febc2e; }
+    .mock-dot.green { background: #28c840; }
+
+    .mock-title {
+      flex: 1;
+      text-align: center;
+      font-size: 12px;
+      color: var(--mute);
+      font-weight: 500;
+    }
+
+    .mock-body {
+      display: grid;
+      grid-template-columns: 180px 1fr 340px;
+      min-height: 420px;
+    }
+
+    .mock-sidebar {
+      border-right: 1px solid var(--hairline);
+      padding: 12px 0;
+      background: #1f1f1f;
+    }
+
+    .mock-sidebar-section {
+      padding: 8px 12px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--mute);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .mock-sidebar-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: var(--body);
+      cursor: default;
+    }
+
+    .mock-sidebar-item.active {
+      background: rgba(34, 211, 238, 0.1);
+      color: var(--ink);
+    }
+
+    .mock-sidebar-item .branch-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      background: var(--accent);
+      opacity: 0.7;
+    }
+
+    .mock-center {
+      display: flex;
+      flex-direction: column;
+      background: #252526;
+    }
+
+    .mock-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .mock-tab {
+      padding: 10px 16px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--mute);
+      border-bottom: 2px solid transparent;
+    }
+
+    .mock-tab.active {
+      color: var(--ink);
+      border-bottom-color: var(--accent);
+    }
+
+    .mock-workspace {
+      flex: 1;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .mock-file {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: var(--body);
+    }
+
+    .mock-file.selected {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--ink);
+    }
+
+    .mock-file .status {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: var(--radius-pill);
+      background: var(--surface-elevated);
+      color: var(--accent-emerald);
+    }
+
+    .mock-commit-box {
+      margin-top: auto;
+      padding: 12px;
+      border-top: 1px solid var(--hairline);
+    }
+
+    .mock-commit-input {
+      width: 100%;
+      background: var(--canvas-softer);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-md);
+      padding: 10px 12px;
+      font-size: 12px;
+      color: var(--ink);
+      font-family: var(--font-text);
+      margin-bottom: 8px;
+    }
+
+    .mock-commit-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .mock-commit-btn {
+      font-size: 11px;
+      padding: 6px 14px;
+      border-radius: var(--radius-pill);
+      border: none;
+      cursor: default;
+    }
+
+    .mock-commit-btn.ai {
+      background: var(--surface-elevated);
+      color: var(--accent-violet);
+    }
+
+    .mock-commit-btn.commit {
+      background: var(--primary);
+      color: var(--on-primary);
+    }
+
+    .mock-diff {
+      border-left: 1px solid var(--hairline);
+      background: #1f1f1f;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mock-diff-header {
+      padding: 10px 12px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--mute);
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .mock-diff-body {
+      flex: 1;
+      padding: 8px 0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.6;
+      overflow: hidden;
+    }
+
+    .mock-diff-line {
+      padding: 0 12px;
+      white-space: pre;
+    }
+
+    .mock-diff-line.add { background: var(--diff-add); color: var(--diff-add-text); }
+    .mock-diff-line.remove { background: var(--diff-remove); color: var(--diff-remove-text); }
+    .mock-diff-line.ctx { color: var(--mute); }
+
+    /* ─── Trust strip ─── */
+    .trust-strip {
+      padding: 48px 0;
+      border-top: 1px solid var(--hairline);
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .trust-strip p {
+      text-align: center;
+      font-size: 14px;
+      color: var(--mute);
+      margin-bottom: 24px;
+    }
+
+    .trust-badges {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 32px;
+      flex-wrap: wrap;
+    }
+
+    .trust-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--body);
+    }
+
+    .trust-badge svg { opacity: 0.7; }
+
+    /* ─── Feature sections ─── */
+    .feature-section {
+      padding: 96px 0;
+    }
+
+    .feature-section.alt-bg {
+      background: var(--canvas-soft);
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 64px;
+      align-items: center;
+    }
+
+    .feature-grid.reverse .feature-content { order: 2; }
+    .feature-grid.reverse .feature-visual { order: 1; }
+
+    .feature-eyebrow {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .feature-content h2 {
+      font-family: var(--font-display);
+      font-size: clamp(28px, 3.5vw, 36px);
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+
+    .feature-content p {
+      font-size: 16px;
+      line-height: 1.6;
+      color: var(--body);
+      margin-bottom: 24px;
+    }
+
+    .feature-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--ink);
+      transition: gap 0.2s;
+    }
+
+    .feature-link:hover { gap: 10px; }
+
+    .feature-visual {
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+      border: 1px solid var(--hairline);
+      background: var(--canvas-softer);
+      box-shadow: var(--shadow-card);
+    }
+
+    /* Graph mock */
+    .graph-mock {
+      padding: 24px;
+      min-height: 320px;
+    }
+
+    .graph-mock svg { width: 100%; height: auto; }
+
+    /* Patch mock */
+    .patch-mock {
+      padding: 20px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .patch-hunk-header {
+      background: var(--surface-elevated);
+      padding: 6px 12px;
+      color: var(--mute);
+      border-radius: var(--radius-md) var(--radius-md) 0 0;
+      font-size: 11px;
+    }
+
+    .patch-line {
+      padding: 2px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .patch-line .stage-btn {
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      border: 1px solid var(--hairline-mid);
+      background: transparent;
+      flex-shrink: 0;
+      cursor: default;
+    }
+
+    .patch-line .stage-btn.staged {
+      background: var(--accent-emerald);
+      border-color: var(--accent-emerald);
+    }
+
+    .patch-line.add { background: var(--diff-add); color: var(--diff-add-text); }
+    .patch-line.remove { background: var(--diff-remove); color: var(--diff-remove-text); }
+
+    /* AI mock */
+    .ai-mock {
+      padding: 24px;
+    }
+
+    .ai-mock-label {
+      font-size: 11px;
+      color: var(--mute);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .ai-mock-output {
+      background: var(--canvas);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--ink);
+      margin-bottom: 16px;
+    }
+
+    .ai-mock-output .cursor-blink {
+      display: inline-block;
+      width: 2px;
+      height: 16px;
+      background: var(--accent-violet);
+      animation: blink 1s step-end infinite;
+      vertical-align: text-bottom;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    .ai-mock-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .ai-tag {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: var(--radius-pill);
+      background: var(--surface-elevated);
+      color: var(--body);
+    }
+
+    /* ─── Promo band ─── */
+    .promo-band {
+      background: var(--ink);
+      color: var(--on-primary);
+      padding: 80px 0;
+    }
+
+    .promo-band .container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+
+    .promo-band h2 {
+      font-family: var(--font-display);
+      font-size: clamp(28px, 3.5vw, 40px);
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+
+    .promo-band p {
+      font-size: 16px;
+      line-height: 1.6;
+      color: rgba(0, 0, 0, 0.65);
+      margin-bottom: 28px;
+    }
+
+    .promo-band .btn-primary {
+      background: var(--on-primary);
+      color: var(--ink);
+      border: 1px solid rgba(0, 0, 0, 0.15);
+    }
+
+    .arch-cards {
+      display: grid;
+      gap: 12px;
+    }
+
+    .arch-card {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: var(--radius-lg);
+      padding: 16px 20px;
+    }
+
+    .arch-card h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .arch-card p {
+      font-size: 13px;
+      color: rgba(0, 0, 0, 0.55);
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    /* ─── Highlights grid ─── */
+    .highlights {
+      padding: 96px 0;
+    }
+
+    .highlights-header {
+      text-align: center;
+      margin-bottom: 56px;
+    }
+
+    .highlights-header h2 {
+      font-family: var(--font-display);
+      font-size: clamp(28px, 3.5vw, 36px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+
+    .highlights-header p {
+      font-size: 16px;
+      color: var(--body);
+    }
+
+    .highlights-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .highlight-card {
+      background: var(--canvas-soft);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-xl);
+      padding: 28px;
+      transition: border-color 0.2s;
+    }
+
+    .highlight-card:hover {
+      border-color: var(--hairline-mid);
+    }
+
+    .highlight-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-md);
+      background: var(--surface-elevated);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 18px;
+    }
+
+    .highlight-card h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .highlight-card p {
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--body);
+    }
+
+    /* ─── Changelog ─── */
+    .changelog {
+      padding: 96px 0;
+      background: var(--canvas-soft);
+    }
+
+    .changelog-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      margin-bottom: 40px;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+
+    .changelog-header h2 {
+      font-family: var(--font-display);
+      font-size: clamp(28px, 3.5vw, 36px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .changelog-list {
+      list-style: none;
+      border-top: 1px solid var(--hairline);
+    }
+
+    .changelog-item {
+      display: grid;
+      grid-template-columns: 80px 1fr auto;
+      gap: 24px;
+      align-items: center;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .changelog-version {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--accent);
+    }
+
+    .changelog-title {
+      font-size: 15px;
+      font-weight: 500;
+    }
+
+    .changelog-date {
+      font-size: 13px;
+      color: var(--mute);
+    }
+
+    /* ─── CTA ─── */
+    .cta-section {
+      padding: 120px 0;
+      text-align: center;
+    }
+
+    .cta-section h2 {
+      font-family: var(--font-display);
+      font-size: clamp(32px, 4vw, 44px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+    }
+
+    .cta-section p {
+      font-size: 16px;
+      color: var(--body);
+      margin-bottom: 32px;
+    }
+
+    .cta-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* ─── Footer ─── */
+    .footer {
+      background: var(--canvas-soft);
+      border-top: 1px solid var(--hairline);
+      padding: 64px 0 32px;
+    }
+
+    .footer-grid {
+      display: grid;
+      grid-template-columns: 2fr repeat(3, 1fr);
+      gap: 48px;
+      margin-bottom: 48px;
+    }
+
+    .footer-brand p {
+      font-size: 14px;
+      color: var(--body);
+      line-height: 1.6;
+      margin-top: 12px;
+      max-width: 280px;
+    }
+
+    .footer-col h4 {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+
+    .footer-col ul {
+      list-style: none;
+    }
+
+    .footer-col li {
+      margin-bottom: 10px;
+    }
+
+    .footer-col a {
+      font-size: 14px;
+      color: var(--body);
+      transition: color 0.2s;
+    }
+
+    .footer-col a:hover { color: var(--ink); }
+
+    .footer-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 32px;
+      border-top: 1px solid var(--hairline);
+      font-size: 13px;
+      color: var(--mute);
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    /* ─── Mobile menu ─── */
+    .mobile-menu {
+      display: none;
+      position: fixed;
+      inset: 0;
+      top: var(--nav-height);
+      background: var(--canvas);
+      z-index: 99;
+      padding: 24px 32px;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .mobile-menu.open { display: flex; }
+
+    .mobile-menu a {
+      font-size: 18px;
+      font-weight: 500;
+      color: var(--body);
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 960px) {
+      .mock-body { grid-template-columns: 1fr; min-height: auto; }
+      .mock-sidebar, .mock-diff { display: none; }
+      .feature-grid { grid-template-columns: 1fr; gap: 40px; }
+      .feature-grid.reverse .feature-content,
+      .feature-grid.reverse .feature-visual { order: unset; }
+      .promo-band .container { grid-template-columns: 1fr; }
+      .highlights-grid { grid-template-columns: 1fr; }
+      .footer-grid { grid-template-columns: 1fr 1fr; }
+      .changelog-item { grid-template-columns: 60px 1fr; }
+      .changelog-date { display: none; }
+    }
+
+    @media (max-width: 768px) {
+      .nav-links, .nav-actions .btn-secondary { display: none; }
+      .nav-toggle { display: block; }
+      .container { padding: 0 20px; }
+      .nav-inner { padding: 0 20px; }
+      .footer-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Nav -->
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="#" class="nav-logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect width="28" height="28" rx="8" fill="#22d3ee" fill-opacity="0.15"/>
+          <path d="M6 18C6 18 9 12 14 12C19 12 22 18 22 18" stroke="#22d3ee" stroke-width="2" stroke-linecap="round"/>
+          <path d="M8 14L6 10M20 14L22 10" stroke="#22d3ee" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        GitWave
+      </a>
+      <ul class="nav-links">
+        <li><a href="#features">功能</a></li>
+        <li><a href="#architecture">架构</a></li>
+        <li><a href="#highlights">亮点</a></li>
+        <li><a href="#changelog">更新</a></li>
+      </ul>
+      <div class="nav-actions">
+        <a href="https://github.com/ginuim/gitwave" class="btn btn-secondary">GitHub</a>
+        <a href="#download" class="btn btn-primary">下载</a>
+      </div>
+      <button class="nav-toggle" aria-label="打开菜单" onclick="toggleMenu()">
+        <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+      </button>
+    </div>
+  </nav>
+
+  <div class="mobile-menu" id="mobileMenu">
+    <a href="#features" onclick="toggleMenu()">功能</a>
+    <a href="#architecture" onclick="toggleMenu()">架构</a>
+    <a href="#highlights" onclick="toggleMenu()">亮点</a>
+    <a href="#changelog" onclick="toggleMenu()">更新</a>
+    <a href="#download" class="btn btn-primary" onclick="toggleMenu()">下载</a>
+  </div>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <p class="hero-eyebrow">Desktop Git Client</p>
+      <h1>为开发者打造，GitWave 让版本控制清晰可控</h1>
+      <p class="hero-sub">原生桌面体验、三栏工作流、可视化提交图与 AI 辅助提交。本地 git CLI 驱动，不嵌入 libgit2，你的仓库始终在你手中。</p>
+      <div class="hero-actions">
+        <a href="#download" class="btn btn-primary btn-large">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v9.5M8 10.5L5 7.5M8 10.5L11 7.5M3 13h10"/></svg>
+          下载 macOS 版
+        </a>
+        <a href="#features" class="btn btn-secondary btn-large">
+          了解功能 <span class="arrow">→</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="mock-wrapper">
+      <div class="mock-frame">
+        <div class="mock-titlebar">
+          <span class="mock-dot red"></span>
+          <span class="mock-dot yellow"></span>
+          <span class="mock-dot green"></span>
+          <span class="mock-title">GitWave — my-project</span>
+        </div>
+        <div class="mock-body">
+          <aside class="mock-sidebar">
+            <div class="mock-sidebar-section">Branches</div>
+            <div class="mock-sidebar-item active">
+              <span class="branch-icon"></span> main
+            </div>
+            <div class="mock-sidebar-item">
+              <span class="branch-icon" style="background: var(--accent-violet)"></span> feature/diff-panel
+            </div>
+            <div class="mock-sidebar-item">
+              <span class="branch-icon" style="background: var(--accent-emerald)"></span> fix/stage-hunk
+            </div>
+            <div class="mock-sidebar-section" style="margin-top: 16px">Remote</div>
+            <div class="mock-sidebar-item">↑ 2 ahead · ↓ 0 behind</div>
+          </aside>
+          <div class="mock-center">
+            <div class="mock-tabs">
+              <div class="mock-tab active">工作区</div>
+              <div class="mock-tab">历史</div>
+            </div>
+            <div class="mock-workspace">
+              <div class="mock-file selected">
+                <span class="status">M</span> src/components/DiffPanel.vue
+              </div>
+              <div class="mock-file">
+                <span class="status">M</span> src/utils/diffPatch.ts
+              </div>
+              <div class="mock-file">
+                <span class="status">A</span> src/utils/diffLineSelection.ts
+              </div>
+            </div>
+            <div class="mock-commit-box">
+              <input class="mock-commit-input" value="feat: add line-level stage support in diff panel" readonly>
+              <div class="mock-commit-actions">
+                <button class="mock-commit-btn ai">✦ AI 生成</button>
+                <button class="mock-commit-btn commit">Commit</button>
+              </div>
+            </div>
+          </div>
+          <div class="mock-diff">
+            <div class="mock-diff-header">DiffPanel.vue</div>
+            <div class="mock-diff-body">
+              <div class="mock-diff-line ctx">@@ -42,6 +42,12 @@</div>
+              <div class="mock-diff-line ctx"> export function stageHunk() {</div>
+              <div class="mock-diff-line remove">-  return applyPatch(hunk)</div>
+              <div class="mock-diff-line add">+  return applyPatch(hunk, {</div>
+              <div class="mock-diff-line add">+    partial: true,</div>
+              <div class="mock-diff-line add">+    lines: selectedLines,</div>
+              <div class="mock-diff-line add">+  })</div>
+              <div class="mock-diff-line ctx"> }</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Trust -->
+  <section class="trust-strip">
+    <div class="container">
+      <p>受开发者信赖的 Git 工作流工具</p>
+      <div class="trust-badges">
+        <div class="trust-badge">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 8h8M6 11h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Tauri 2 原生桌面
+        </div>
+        <div class="trust-badge">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M10 6v4l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          本地 git CLI
+        </div>
+        <div class="trust-badge">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 10l4 4 8-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Vue 3 + Rust
+        </div>
+        <div class="trust-badge">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 3l7 4v6l-7 4-7-4V7l7-4z" stroke="currentColor" stroke-width="1.5"/></svg>
+          无 libgit2 依赖
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="feature-section" id="features">
+    <div class="container">
+      <div class="feature-grid">
+        <div class="feature-content">
+          <p class="feature-eyebrow">三栏布局</p>
+          <h2>Sidebar · 工作区 · Diff，一屏掌控全局</h2>
+          <p>Splitpanes 三栏可拖拽布局：左侧管理分支、远程、Stash 与 Subtree；中间切换工作区与历史视图；右侧实时渲染 unified diff，选中即看变更。</p>
+          <a href="#download" class="feature-link">立即体验 →</a>
+        </div>
+        <div class="feature-visual">
+          <div class="mock-frame" style="border: none; box-shadow: none;">
+            <div class="mock-body" style="min-height: 280px; grid-template-columns: 120px 1fr 200px;">
+              <aside class="mock-sidebar" style="font-size: 11px;">
+                <div class="mock-sidebar-item active"><span class="branch-icon"></span> main</div>
+                <div class="mock-sidebar-item"><span class="branch-icon" style="background: var(--accent-violet)"></span> dev</div>
+              </aside>
+              <div class="mock-center">
+                <div class="mock-workspace">
+                  <div class="mock-file selected"><span class="status">M</span> App.vue</div>
+                  <div class="mock-file"><span class="status">M</span> lib.rs</div>
+                </div>
+              </div>
+              <div class="mock-diff">
+                <div class="mock-diff-body">
+                  <div class="mock-diff-line add">+ invoke('git_status')</div>
+                  <div class="mock-diff-line ctx">  refreshAll()</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="feature-section alt-bg">
+    <div class="container">
+      <div class="feature-grid reverse">
+        <div class="feature-content">
+          <p class="feature-eyebrow">提交图</p>
+          <h2>可视化分支拓扑，历史一目了然</h2>
+          <p>CommitGraphView 渲染分支 lane 与 merge 节点，hover 高亮关联路径。分页加载 commit log，支持当前分支与全仓库过滤，让复杂分支历史也能快速定位。</p>
+          <a href="#highlights" class="feature-link">了解更多 →</a>
+        </div>
+        <div class="feature-visual">
+          <div class="graph-mock">
+            <svg viewBox="0 0 400 280" fill="none">
+              <path d="M60 40 L60 240" stroke="#22d3ee" stroke-width="2" opacity="0.6"/>
+              <path d="M60 80 Q120 80 120 120 L120 200" stroke="#a78bfa" stroke-width="2" opacity="0.6"/>
+              <path d="M120 200 Q180 200 180 160 L180 80 L180 40" stroke="#34d399" stroke-width="2" opacity="0.6"/>
+              <path d="M180 80 Q240 80 240 120 L240 240" stroke="#22d3ee" stroke-width="2" opacity="0.4"/>
+              <circle cx="60" cy="40" r="6" fill="#22d3ee"/>
+              <circle cx="60" cy="80" r="5" fill="#22d3ee" opacity="0.8"/>
+              <circle cx="60" cy="120" r="5" fill="#22d3ee" opacity="0.8"/>
+              <circle cx="60" cy="160" r="5" fill="#22d3ee" opacity="0.8"/>
+              <circle cx="60" cy="200" r="5" fill="#22d3ee" opacity="0.8"/>
+              <circle cx="60" cy="240" r="6" fill="#22d3ee"/>
+              <circle cx="120" cy="120" r="5" fill="#a78bfa"/>
+              <circle cx="120" cy="200" r="6" fill="#a78bfa"/>
+              <circle cx="180" cy="40" r="5" fill="#34d399" opacity="0.8"/>
+              <circle cx="180" cy="80" r="6" fill="#34d399"/>
+              <circle cx="240" cy="120" r="5" fill="#22d3ee" opacity="0.6"/>
+              <circle cx="240" cy="160" r="5" fill="#22d3ee" opacity="0.6"/>
+              <circle cx="240" cy="200" r="5" fill="#22d3ee" opacity="0.6"/>
+              <circle cx="240" cy="240" r="6" fill="#22d3ee" opacity="0.6"/>
+              <text x="72" y="44" fill="#9a9a9a" font-size="11" font-family="JetBrains Mono">abc1234 feat: init</text>
+              <text x="72" y="84" fill="#9a9a9a" font-size="11" font-family="JetBrains Mono">def5678 fix: stage</text>
+              <text x="132" y="124" fill="#9a9a9a" font-size="11" font-family="JetBrains Mono">ghi9012 merge dev</text>
+              <text x="192" y="44" fill="#9a9a9a" font-size="11" font-family="JetBrains Mono">jkl3456 refactor</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="feature-section">
+    <div class="container">
+      <div class="feature-grid">
+        <div class="feature-content">
+          <p class="feature-eyebrow">精确 Stage</p>
+          <h2>Hunk 与行级暂存，改动由你掌控</h2>
+          <p>DiffPanel 支持 unified diff 渲染、hunk 级与行级 stage/revert。二进制文件可预览图片 diff。不再被迫全文件 stage，每一次提交都精确到行。</p>
+          <a href="#features" class="feature-link">查看 Diff 能力 →</a>
+        </div>
+        <div class="feature-visual">
+          <div class="patch-mock">
+            <div class="patch-hunk-header">@@ -10,4 +10,6 @@ function parseDiff()</div>
+            <div class="patch-line remove"><span class="stage-btn staged"></span>- const mode = 'full'</div>
+            <div class="patch-line add"><span class="stage-btn staged"></span>+ const mode = 'partial'</div>
+            <div class="patch-line add"><span class="stage-btn"></span>+ const lines = getSelection()</div>
+            <div class="patch-line ctx"><span class="stage-btn"></span>  return apply(mode)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="feature-section alt-bg">
+    <div class="container">
+      <div class="feature-grid reverse">
+        <div class="feature-content">
+          <p class="feature-eyebrow">AI Commit</p>
+          <h2>一键生成规范的提交信息</h2>
+          <p>基于 staged diff 上下文，通过可配置的 AI Provider 流式生成 commit message。支持 OpenAI 兼容端点，自定义 prompt 模板，让提交说明既快又规范。</p>
+          <a href="#highlights" class="feature-link">配置 AI Provider →</a>
+        </div>
+        <div class="feature-visual">
+          <div class="ai-mock">
+            <div class="ai-mock-label">AI 生成中</div>
+            <div class="ai-mock-output">
+              feat(diff): add line-level stage and revert in DiffPanel<span class="cursor-blink"></span>
+            </div>
+            <div class="ai-mock-meta">
+              <span class="ai-tag">OpenAI</span>
+              <span class="ai-tag">gpt-4o</span>
+              <span class="ai-tag">3 files staged</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architecture promo band -->
+  <section class="promo-band" id="architecture">
+    <div class="container">
+      <div>
+        <h2>本地优先，架构透明</h2>
+        <p>Tauri 2 桌面运行时 + Vue 3 前端 + Rust 后端。所有 Git 操作通过 spawn git CLI 执行，不嵌入 libgit2。AppState 持有 repo_path，命令无状态、可预测。</p>
+        <a href="../docs/architecture.html" class="btn btn-primary btn-large">查看架构图 →</a>
+      </div>
+      <div class="arch-cards">
+        <div class="arch-card">
+          <h3>前端 · Vue 3 + TypeScript</h3>
+          <p>Splitpanes 三栏、invoke() 委托、Tailwind CSS 暗色主题</p>
+        </div>
+        <div class="arch-card">
+          <h3>后端 · Rust + Tauri 2</h3>
+          <p>patch 级 stage、subtree、二进制 diff、AI diff 上下文导出</p>
+        </div>
+        <div class="arch-card">
+          <h3>数据 · 本地 git CLI</h3>
+          <p>push/pull/fetch/clone 经标准 git 命令，settings 持久化到 app_data_dir</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Highlights -->
+  <section class="highlights" id="highlights">
+    <div class="container">
+      <div class="highlights-header">
+        <h2>Stay on the frontier</h2>
+        <p>为日常 Git 工作流设计的每一个细节</p>
+      </div>
+      <div class="highlights-grid">
+        <div class="highlight-card">
+          <div class="highlight-icon">⎇</div>
+          <h3>分支与 Subtree</h3>
+          <p>分支切换、ahead/behind 状态、Stash、Tag 与 git subtree 操作，Sidebar 一站式管理。</p>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">🖼</div>
+          <h3>二进制图片 Diff</h3>
+          <p>图片文件变更可预览 staged/unstaged 两侧，不再对二进制 diff 束手无策。</p>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">⚙</div>
+          <h3>可配置 AI</h3>
+          <p>Settings 中配置 Git user、AI Provider/Model 与 Commit Prompt，适配你的团队规范。</p>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">📦</div>
+          <h3>跨平台打包</h3>
+          <p>Vite 构建 → Tauri bundle，支持 macOS dmg 与 Windows nsis 安装包。</p>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">🔒</div>
+          <h3>本地仓库</h3>
+          <p>Git 读写完全依赖本地 git 命令行，远程同步经标准 push/pull/fetch。</p>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">📋</div>
+          <h3>最近仓库</h3>
+          <p>recent repos 持久化，pinned branches 快速访问，打开即开工。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Changelog -->
+  <section class="changelog" id="changelog">
+    <div class="container">
+      <div class="changelog-header">
+        <h2>Changelog</h2>
+        <a href="#" class="feature-link">查看全部更新 →</a>
+      </div>
+      <ul class="changelog-list">
+        <li class="changelog-item">
+          <span class="changelog-version">0.1.0</span>
+          <span class="changelog-title">初始版本 — 三栏 Git 客户端、提交图、行级 Stage、AI Commit</span>
+          <span class="changelog-date">2026</span>
+        </li>
+        <li class="changelog-item">
+          <span class="changelog-version">—</span>
+          <span class="changelog-title">Subtree 管理 · 二进制图片 diff 预览</span>
+          <span class="changelog-date">2026</span>
+        </li>
+        <li class="changelog-item">
+          <span class="changelog-version">—</span>
+          <span class="changelog-title">Tauri 2 迁移 · plugin-http AI 集成</span>
+          <span class="changelog-date">2026</span>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section" id="download">
+    <div class="container">
+      <h2>现在就试试 GitWave</h2>
+      <p>原生桌面 Git 客户端，为你的日常开发工作流而生。</p>
+      <div class="cta-actions">
+        <a href="#" class="btn btn-primary btn-large">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v9.5M8 10.5L5 7.5M8 10.5L11 7.5M3 13h10"/></svg>
+          下载 macOS 版
+        </a>
+        <a href="#" class="btn btn-secondary btn-large">下载 Windows 版</a>
+        <a href="https://github.com/ginuim/gitwave" class="btn btn-subtle btn-large">GitHub 源码 →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a href="#" class="nav-logo">
+            <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
+              <rect width="28" height="28" rx="8" fill="#22d3ee" fill-opacity="0.15"/>
+              <path d="M6 18C6 18 9 12 14 12C19 12 22 18 22 18" stroke="#22d3ee" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            GitWave
+          </a>
+          <p>基于 Tauri 2 的桌面 Git 客户端。本地 git CLI 驱动，为开发者打造清晰可控的版本控制体验。</p>
+        </div>
+        <div class="footer-col">
+          <h4>产品</h4>
+          <ul>
+            <li><a href="#features">功能</a></li>
+            <li><a href="#download">下载</a></li>
+            <li><a href="#changelog">更新日志</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h4>资源</h4>
+          <ul>
+            <li><a href="../docs/architecture.html">架构文档</a></li>
+            <li><a href="https://github.com/ginuim/gitwave">GitHub</a></li>
+            <li><a href="#">使用文档</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h4>技术</h4>
+          <ul>
+            <li><a href="#architecture">Tauri 2</a></li>
+            <li><a href="#architecture">Vue 3</a></li>
+            <li><a href="#architecture">Rust</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 GitWave · com.reaidea.gitwave</span>
+        <span>v0.1.0 · Tauri 2 + Vue 3 + Rust</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    function toggleMenu() {
+      document.getElementById('mobileMenu').classList.toggle('open');
+    }
+
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        const id = a.getAttribute('href');
+        if (id === '#') return;
+        const el = document.querySelector(id);
+        if (el) {
+          e.preventDefault();
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    });
+  </script>
+</body>
+</html>

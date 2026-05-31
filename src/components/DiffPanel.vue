@@ -39,8 +39,8 @@ const emit = defineEmits<{
   stageFile: [path: string]
   stagePatch: [patch: string]
   revertFile: [path: string, isStaged: boolean]
-  /** 第二个参数与当前展示的 diff 一致（Staged / Unstaged） */
-  revertPatch: [patch: string, isStaged: boolean]
+  /** 第二参数与当前 diff 一致（Staged / Unstaged）；第三参数为乐观 UI 需移除的行 key */
+  revertPatch: [patch: string, isStaged: boolean, revertedKeys: string[]]
 }>()
 
 // Collapsed state per file section (indexed by section index in sections array)
@@ -319,7 +319,9 @@ function revertChangeBlock(sectionIdx: number, hunkIdx: number, blk: HunkBodySeg
   const section = sections.value[sectionIdx]
   const hunk = section.hunks[hunkIdx]
   const patch = buildPatchForSegment(section, hunk, blk, 'revert')
-  if (patch) emit('revertPatch', patch, props.workspaceIsStaged)
+  if (patch) {
+    emit('revertPatch', patch, props.workspaceIsStaged, [...lineKeysInChangeSegment(hunk, blk)])
+  }
 }
 
 function stageSelectedLinesInBlock(sectionIdx: number, hunkIdx: number, blk: HunkBodySegment) {
@@ -336,7 +338,7 @@ function revertSelectedLinesInBlock(sectionIdx: number, hunkIdx: number, blk: Hu
   const hunk = section.hunks[hunkIdx]
   const ids = selectedLineIdsInBlock(hunk, blk)
   const patch = buildPatchForSelection([section], ids, 'revert')
-  if (patch) emit('revertPatch', patch, props.workspaceIsStaged)
+  if (patch) emit('revertPatch', patch, props.workspaceIsStaged, [...ids])
   clearLineSelection()
 }
 
@@ -353,7 +355,8 @@ function selectDiffLine(e: MouseEvent, lineId: string) {
   })
   selectedLineIds.value = result.selected
   anchorLineId.value = result.anchorId
-  isDraggingLineSelection.value = !e.shiftKey && !(e.ctrlKey || e.metaKey)
+  isDraggingLineSelection.value =
+    !e.shiftKey && !(e.ctrlKey || e.metaKey) && result.selected.has(lineId)
 }
 
 function onDiffLineMouseDown(e: MouseEvent, lineId: string | undefined) {

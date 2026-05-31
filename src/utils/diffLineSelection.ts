@@ -50,5 +50,12 @@ export function applyLineSelectionClick(input: LineSelectionClickInput): LineSel
     return { selected, anchorId: input.clickedId }
   }
 
+  // 普通点击：已选中则取消，未选中则仅选当前行
+  if (input.current.has(input.clickedId)) {
+    const selected = new Set(input.current)
+    selected.delete(input.clickedId)
+    return { selected, anchorId: selected.size > 0 ? input.clickedId : null }
+  }
+
   return { selected: new Set([input.clickedId]), anchorId: input.clickedId }
 }

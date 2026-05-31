@@ -49,4 +49,32 @@ describe('diffLineSelection', () => {
     expect([...result.selected]).toEqual(['0:0:2'])
     expect(result.anchorId).toBe('0:0:3')
   })
+
+  it('deselects a selected line on plain click', () => {
+    const result = applyLineSelectionClick({
+      lines,
+      current: new Set(['0:0:3']),
+      clickedId: '0:0:3',
+      anchorId: '0:0:3',
+      shiftKey: false,
+      toggleKey: false,
+    })
+
+    expect([...result.selected]).toEqual([])
+    expect(result.anchorId).toBeNull()
+  })
+
+  it('deselects one line from a multi selection on plain click', () => {
+    const result = applyLineSelectionClick({
+      lines,
+      current: new Set(['0:0:2', '0:0:3', '0:0:4']),
+      clickedId: '0:0:3',
+      anchorId: '0:0:2',
+      shiftKey: false,
+      toggleKey: false,
+    })
+
+    expect([...result.selected]).toEqual(['0:0:2', '0:0:4'])
+    expect(result.anchorId).toBe('0:0:3')
+  })
 })

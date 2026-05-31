@@ -12,6 +12,7 @@ import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
 import type { FileStatus, CommitLog, CommitLogPage, BranchInfo, BranchTip, AheadBehind, WorktreeState, CheckoutMode, SubtreeInfo } from './types'
 import { isUntrackedPath } from './utils/gitStatus'
+import { applyOptimisticRevertToDiffText } from './utils/diffPatch'
 
 // State
 const repoPath = ref<string | null>(null)
@@ -376,14 +377,22 @@ async function handleStagePatch(patch: string) {
   }
 }
 
-async function handleRevertPatch(patch: string, isStaged: boolean) {
+async function handleRevertPatch(patch: string, isStaged: boolean, revertedKeys: string[] = []) {
   if (patchStaging.value) return
   const msg = isStaged
     ? '确认丢弃选中的已 Stage 变更？此操作不可撤销。'
     : '确认丢弃选中的工作区变更？此操作不可撤销。'
   if (!(await confirm(msg))) return
   const targetFile = selectedFile.value
+  const snapshot = diffText.value
   selectedFileIsStaged.value = isStaged
+  if (revertedKeys.length > 0 && snapshot) {
+    diffText.value = applyOptimisticRevertToDiffText(
+      snapshot,
+      targetFile,
+      new Set(revertedKeys),
+    )
+  }
   patchStaging.value = true
   console.log('[revertPatch] isStaged=', isStaged, '\n--- patch start ---\n' + patch + '\n--- patch end ---')
   try {
@@ -404,6 +413,7 @@ async function handleRevertPatch(patch: string, isStaged: boolean) {
     }
     showToast('已丢弃变更', 'success')
   } catch (e: any) {
+    diffText.value = snapshot
     showToast(String(e))
   } finally {
     patchStaging.value = false

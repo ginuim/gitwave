@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyOptimisticRevertToDiffText,
   buildPatchForSegment,
   buildPatchForSelection,
   getHunkBodySegments,
@@ -96,5 +97,20 @@ describe('diffPatch', () => {
     expect(patch).toContain('+const c = 3')
     expect(patch).toContain('+const e = 50')
     expect(patch).toContain(' const e = 5')
+  })
+
+  it('optimistically removes reverted +/- lines from diff text', () => {
+    const [section] = parseDiffSections(SAMPLE_DIFF, null)
+    const [hunk] = section.hunks
+    const segment = getHunkBodySegments(hunk).find((item) => item.kind === 'changes')!
+    const revertedKeys = lineKeysInChangeSegment(hunk, segment)
+
+    const next = applyOptimisticRevertToDiffText(SAMPLE_DIFF, null, revertedKeys)
+
+    expect(next).not.toContain('-const b = 2')
+    expect(next).not.toContain('+const b = 20')
+    expect(next).not.toContain('+const c = 3')
+    expect(next).toContain('-const e = 5')
+    expect(next).toContain('+const e = 50')
   })
 })
