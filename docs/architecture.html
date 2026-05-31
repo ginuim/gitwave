@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitWave Architecture Diagram</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    .pulse-dot {
+      width: 12px; height: 12px;
+      background: #22d3ee;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 960px; display: block; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer {
+      text-align: center;
+      margin-top: 1.5rem;
+      color: #475569;
+      font-size: 0.75rem;
+    }
+    .toolbar {
+      display: flex;
+      gap: 0.5rem;
+      margin-left: auto;
+      flex-shrink: 0;
+      align-items: center;
+    }
+    .toolbar-toggle {
+      background: transparent;
+      border: none;
+      color: #475569;
+      cursor: pointer;
+      font-size: 1.25rem;
+      line-height: 1;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.375rem;
+      transition: color 0.2s, background 0.2s;
+    }
+    .toolbar-toggle:hover { color: #94a3b8; background: rgba(30, 41, 59, 0.5); }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button {
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      font-family: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .toolbar-actions button:hover {
+      background: rgba(51, 65, 85, 0.8);
+      color: white;
+      border-color: #475569;
+    }
+    @media print {
+      body { background: #020617; padding: 1rem; }
+      .toolbar { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>GitWave Architecture</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">Tauri 2 桌面 Git 客户端 · Vue 3 前端 + Rust 后端 · 本地 git CLI 驱动</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 780">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrow-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee" />
+          </marker>
+          <marker id="arrow-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrow-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <marker id="arrow-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- Arrows (behind boxes) -->
+        <!-- User → Tauri -->
+        <line x1="88" y1="200" x2="148" y2="200" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- Frontend → IPC -->
+        <line x1="500" y1="248" x2="500" y2="278" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="500" y1="318" x2="500" y2="348" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- Rust → git CLI -->
+        <line x1="340" y1="530" x2="340" y2="568" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)"/>
+        <text x="356" y="554" fill="#94a3b8" font-size="8">spawn</text>
+
+        <!-- git CLI → Local Repo -->
+        <line x1="340" y1="628" x2="340" y2="666" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- Rust → Local FS (persistence) -->
+        <line x1="500" y1="530" x2="500" y2="568" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="516" y="554" fill="#94a3b8" font-size="8">read/write</text>
+
+        <!-- git CLI → Remote -->
+        <path d="M 400 598 Q 520 598 580 598 L 660 598" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+        <text x="530" y="590" fill="#94a3b8" font-size="8">push / pull / fetch / clone</text>
+
+        <!-- WorkspacePanel → AI (dashed) -->
+        <path d="M 620 170 Q 720 120 820 120 L 860 120" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-rose)"/>
+        <text x="700" y="112" fill="#fb7185" font-size="8">HTTPS (plugin-http)</text>
+
+        <!-- Rust → dialog plugin -->
+        <line x1="660" y1="470" x2="760" y2="470" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- User -->
+        <rect x="20" y="170" width="68" height="60" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="54" y="195" fill="white" font-size="11" font-weight="600" text-anchor="middle">User</text>
+        <text x="54" y="211" fill="#94a3b8" font-size="9" text-anchor="middle">Desktop</text>
+
+        <!-- Tauri boundary -->
+        <rect x="150" y="30" width="700" height="510" rx="12" fill="rgba(251, 191, 36, 0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="162" y="48" fill="#fbbf24" font-size="10" font-weight="600">Tauri 2 Desktop Runtime · WebView</text>
+
+        <!-- Frontend layer label -->
+        <rect x="170" y="58" width="660" height="190" rx="8" fill="transparent" stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="182" y="72" fill="#22d3ee" font-size="8">Vue 3 Frontend · Vite · TypeScript · Tailwind</text>
+
+        <!-- App.vue orchestrator -->
+        <rect x="190" y="82" width="620" height="36" rx="6" fill="#0f172a"/>
+        <rect x="190" y="82" width="620" height="36" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="500" y="98" fill="white" font-size="11" font-weight="600" text-anchor="middle">App.vue</text>
+        <text x="500" y="112" fill="#94a3b8" font-size="9" text-anchor="middle">central state · invoke() · Splitpanes 三栏布局</text>
+
+        <!-- SidebarPanel -->
+        <rect x="190" y="130" width="118" height="100" rx="6" fill="#0f172a"/>
+        <rect x="190" y="130" width="118" height="100" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="249" y="152" fill="white" font-size="11" font-weight="600" text-anchor="middle">SidebarPanel</text>
+        <text x="249" y="168" fill="#94a3b8" font-size="8" text-anchor="middle">分支 / 远程</text>
+        <text x="249" y="180" fill="#94a3b8" font-size="8" text-anchor="middle">Stash / Tag</text>
+        <text x="249" y="192" fill="#94a3b8" font-size="8" text-anchor="middle">Subtree</text>
+        <text x="249" y="204" fill="#94a3b8" font-size="8" text-anchor="middle">Push / Pull</text>
+        <text x="249" y="220" fill="#22d3ee" font-size="7" text-anchor="middle">18% pane</text>
+
+        <!-- WorkspacePanel / HistoryTab -->
+        <rect x="320" y="130" width="200" height="100" rx="6" fill="#0f172a"/>
+        <rect x="320" y="130" width="200" height="100" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="420" y="152" fill="white" font-size="11" font-weight="600" text-anchor="middle">WorkspacePanel</text>
+        <text x="420" y="166" fill="#94a3b8" font-size="8" text-anchor="middle">工作区 · Stage · Commit</text>
+        <text x="420" y="180" fill="#94a3b8" font-size="8" text-anchor="middle">AI Commit Message</text>
+        <text x="420" y="198" fill="white" font-size="10" font-weight="600" text-anchor="middle">HistoryTab</text>
+        <text x="420" y="212" fill="#94a3b8" font-size="8" text-anchor="middle">CommitGraphView · 分页 log</text>
+        <text x="420" y="224" fill="#22d3ee" font-size="7" text-anchor="middle">middle pane</text>
+
+        <!-- DiffPanel -->
+        <rect x="532" y="130" width="148" height="100" rx="6" fill="#0f172a"/>
+        <rect x="532" y="130" width="148" height="100" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="606" y="152" fill="white" font-size="11" font-weight="600" text-anchor="middle">DiffPanel</text>
+        <text x="606" y="168" fill="#94a3b8" font-size="8" text-anchor="middle">unified diff 渲染</text>
+        <text x="606" y="180" fill="#94a3b8" font-size="8" text-anchor="middle">hunk / 行级 stage</text>
+        <text x="606" y="192" fill="#94a3b8" font-size="8" text-anchor="middle">二进制图片预览</text>
+        <text x="606" y="220" fill="#22d3ee" font-size="7" text-anchor="middle">42% pane</text>
+
+        <!-- SettingsDialog -->
+        <rect x="692" y="130" width="118" height="100" rx="6" fill="#0f172a"/>
+        <rect x="692" y="130" width="118" height="100" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="751" y="152" fill="white" font-size="11" font-weight="600" text-anchor="middle">SettingsDialog</text>
+        <text x="751" y="168" fill="#94a3b8" font-size="8" text-anchor="middle">Git user config</text>
+        <text x="751" y="180" fill="#94a3b8" font-size="8" text-anchor="middle">AI Provider / Model</text>
+        <text x="751" y="192" fill="#94a3b8" font-size="8" text-anchor="middle">Commit Prompt</text>
+        <text x="751" y="220" fill="#22d3ee" font-size="7" text-anchor="middle">modal overlay</text>
+
+        <!-- Utils row -->
+        <rect x="190" y="238" width="620" height="28" rx="4" fill="#0f172a"/>
+        <rect x="190" y="238" width="620" height="28" rx="4" fill="rgba(8, 51, 68, 0.25)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="500" y="256" fill="#94a3b8" font-size="8" text-anchor="middle">utils: diffPatch · diffLineSelection · commitGraph · gitStatus · subtree · graphHoverSound</text>
+
+        <!-- IPC bridge -->
+        <rect x="340" y="280" width="320" height="28" rx="4" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1"/>
+        <text x="500" y="298" fill="#fb923c" font-size="9" text-anchor="middle" font-weight="600">Tauri IPC · invoke() / @tauri-apps/api</text>
+
+        <!-- Rust backend boundary -->
+        <rect x="170" y="348" width="660" height="172" rx="8" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="182" y="362" fill="#34d399" font-size="8">Rust Backend · src-tauri/src/lib.rs</text>
+
+        <!-- Git command layer -->
+        <rect x="190" y="372" width="300" height="132" rx="6" fill="#0f172a"/>
+        <rect x="190" y="372" width="300" height="132" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="340" y="394" fill="white" font-size="11" font-weight="600" text-anchor="middle">Git Command Layer</text>
+        <text x="340" y="410" fill="#94a3b8" font-size="8" text-anchor="middle">Command::new("git") · subprocess</text>
+        <text x="340" y="428" fill="#94a3b8" font-size="8" text-anchor="middle">status · diff · commit · branch</text>
+        <text x="340" y="440" fill="#94a3b8" font-size="8" text-anchor="middle">checkout · stash · tag · subtree</text>
+        <text x="340" y="452" fill="#94a3b8" font-size="8" text-anchor="middle">stage_patch · revert_patch</text>
+        <text x="340" y="464" fill="#94a3b8" font-size="8" text-anchor="middle">push / pull / fetch / clone</text>
+        <text x="340" y="480" fill="#94a3b8" font-size="8" text-anchor="middle">get_staged_diff_for_ai</text>
+        <text x="340" y="494" fill="#34d399" font-size="7" text-anchor="middle">40+ #[tauri::command] handlers</text>
+
+        <!-- AppState -->
+        <rect x="510" y="372" width="148" height="60" rx="6" fill="#0f172a"/>
+        <rect x="510" y="372" width="148" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="584" y="394" fill="white" font-size="11" font-weight="600" text-anchor="middle">AppState</text>
+        <text x="584" y="410" fill="#94a3b8" font-size="9" text-anchor="middle">repo_path: Mutex</text>
+        <text x="584" y="424" fill="#94a3b8" font-size="8" text-anchor="middle">当前打开的仓库路径</text>
+
+        <!-- Local persistence -->
+        <rect x="510" y="444" width="148" height="60" rx="6" fill="#0f172a"/>
+        <rect x="510" y="444" width="148" height="60" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="584" y="464" fill="white" font-size="11" font-weight="600" text-anchor="middle">Local Persistence</text>
+        <text x="584" y="480" fill="#94a3b8" font-size="8" text-anchor="middle">settings.json</text>
+        <text x="584" y="492" fill="#94a3b8" font-size="8" text-anchor="middle">recent_repos · pinned</text>
+
+        <!-- Tauri plugins -->
+        <rect x="680" y="372" width="130" height="132" rx="6" fill="#0f172a"/>
+        <rect x="680" y="372" width="130" height="132" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="745" y="394" fill="white" font-size="11" font-weight="600" text-anchor="middle">Tauri Plugins</text>
+        <text x="745" y="414" fill="#94a3b8" font-size="8" text-anchor="middle">dialog</text>
+        <text x="745" y="426" fill="#94a3b8" font-size="7" text-anchor="middle">文件夹选择 / clone</text>
+        <text x="745" y="444" fill="#94a3b8" font-size="8" text-anchor="middle">opener</text>
+        <text x="745" y="456" fill="#94a3b8" font-size="7" text-anchor="middle">打开外部链接</text>
+        <text x="745" y="474" fill="#94a3b8" font-size="8" text-anchor="middle">http</text>
+        <text x="745" y="486" fill="#94a3b8" font-size="7" text-anchor="middle">AI API 请求</text>
+
+        <!-- External: git CLI -->
+        <rect x="270" y="570" width="140" height="58" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="340" y="594" fill="white" font-size="11" font-weight="600" text-anchor="middle">git CLI</text>
+        <text x="340" y="610" fill="#94a3b8" font-size="9" text-anchor="middle">系统 PATH</text>
+
+        <!-- External: Local Git Repo -->
+        <rect x="250" y="668" width="180" height="58" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="340" y="692" fill="white" font-size="11" font-weight="600" text-anchor="middle">Local Git Repository</text>
+        <text x="340" y="708" fill="#94a3b8" font-size="9" text-anchor="middle">.git + working tree</text>
+
+        <!-- External: Remote Git -->
+        <rect x="660" y="570" width="150" height="58" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="735" y="594" fill="white" font-size="11" font-weight="600" text-anchor="middle">Remote Git</text>
+        <text x="735" y="610" fill="#94a3b8" font-size="9" text-anchor="middle">GitHub / GitLab …</text>
+
+        <!-- External: AI Providers -->
+        <rect x="860" y="90" width="120" height="60" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="920" y="114" fill="white" font-size="11" font-weight="600" text-anchor="middle">AI Providers</text>
+        <text x="920" y="130" fill="#94a3b8" font-size="9" text-anchor="middle">OpenAI · Anthropic</text>
+
+        <!-- Build pipeline note -->
+        <rect x="660" y="668" width="300" height="58" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="810" y="688" fill="white" font-size="10" font-weight="600" text-anchor="middle">Build Pipeline</text>
+        <text x="810" y="704" fill="#94a3b8" font-size="8" text-anchor="middle">pnpm build → dist/ → Tauri bundle (dmg / nsis)</text>
+        <text x="810" y="716" fill="#94a3b8" font-size="8" text-anchor="middle">Vitest · vue-tsc · GitHub Actions CI</text>
+
+        <!-- Legend (below Tauri boundary) -->
+        <text x="150" y="560" fill="white" font-size="10" font-weight="600">Legend</text>
+
+        <rect x="150" y="572" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="172" y="580" fill="#94a3b8" font-size="8">Frontend (Vue)</text>
+
+        <rect x="280" y="572" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="302" y="580" fill="#94a3b8" font-size="8">Backend (Rust)</text>
+
+        <rect x="410" y="572" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="432" y="580" fill="#94a3b8" font-size="8">Local Storage</text>
+
+        <rect x="540" y="572" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="562" y="580" fill="#94a3b8" font-size="8">External / Cloud</text>
+
+        <rect x="680" y="572" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="702" y="580" fill="#94a3b8" font-size="8">AI / Security</text>
+
+        <rect x="820" y="572" width="16" height="10" rx="2" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1"/>
+        <text x="842" y="580" fill="#94a3b8" font-size="8">IPC Bridge</text>
+
+        <line x1="150" y1="598" x2="166" y2="598" stroke="#fb7185" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="172" y="601" fill="#94a3b8" font-size="8">HTTPS (AI)</text>
+
+        <rect x="280" y="590" width="16" height="10" rx="2" fill="transparent" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="302" y="598" fill="#94a3b8" font-size="8">Runtime Boundary</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>前端层</h3>
+        </div>
+        <ul>
+          <li>• Vue 3 Composition API + TypeScript + Tailwind CSS</li>
+          <li>• Splitpanes 三栏：Sidebar / Workspace|History / Diff</li>
+          <li>• 所有 Git 操作通过 invoke() 委托给 Rust 层</li>
+          <li>• AI Commit 由 WorkspacePanel 直接调用 plugin-http</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>后端层</h3>
+        </div>
+        <ul>
+          <li>• Tauri 2 + Rust，不嵌入 libgit2，直接 spawn git CLI</li>
+          <li>• AppState 持有当前 repo_path，命令无状态执行</li>
+          <li>• 支持 patch 级 stage/revert、subtree、二进制图片 diff</li>
+          <li>• get_staged_diff_for_ai 为 AI 生成结构化 diff 上下文</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>数据与外部依赖</h3>
+        </div>
+        <ul>
+          <li>• 本地 app_data_dir 持久化 settings / recent repos</li>
+          <li>• Git 仓库读写完全依赖本地 git 命令行</li>
+          <li>• 远程同步经 git push/pull/fetch/clone</li>
+          <li>• 构建：Vite → dist/ → Tauri bundle (macOS dmg / Windows nsis)</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      GitWave v0.1.0 · Tauri 2 + Vue 3 + Rust · com.reaidea.gitwave
+    </p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'gitwave-architecture.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('gitwave-architecture.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>
