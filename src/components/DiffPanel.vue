@@ -10,6 +10,7 @@ import {
   lineKeysInChangeSegment,
   parseDiffSections,
   type DiffHunk,
+  type DiffLine,
   type HunkBodySegment,
 } from '../utils/diffPatch'
 import {
@@ -272,6 +273,24 @@ function selectedLineIdsInBlock(hunk: DiffHunk, blk: HunkBodySegment): Set<strin
     if (blockIds.has(id)) selected.add(id)
   }
   return selected
+}
+
+/** 选中行与 +/- hover 背景互斥，避免 hover 时盖住蓝色。 */
+function changeLineRowClass(line: DiffLine | undefined, selected: boolean): Record<string, boolean> {
+  if (!line || line.type === 'header' || line.type === 'noNewline') return {}
+  if (selected) {
+    return {
+      'relative z-[2] !bg-blue-700/80 hover:!bg-blue-600/90 text-blue-50 ring-1 ring-inset ring-blue-300/90': true,
+    }
+  }
+  return {
+    'bg-[--diff-added] hover:bg-green-800/40': line.type === 'added',
+    'bg-[--diff-removed] hover:bg-red-800/40': line.type === 'removed',
+    'hover:bg-[--bg-tertiary]': line.type === 'context',
+    'text-[--text-primary]': line.type === 'context',
+    'text-[--diff-added-text]': line.type === 'added',
+    'text-[--diff-removed-text]': line.type === 'removed',
+  }
 }
 
 /** 闭区间下标；可选 maxIdx 防止越界。 */
@@ -593,17 +612,15 @@ onUnmounted(() => {
                     <div
                       v-for="li in liRange(seg.startLineIndex, seg.endLineIndex, hunk.lines.length - 1)"
                       :key="`${si}-${hi}-${li}-${hunk.lines[li]?.key ?? 'x'}`"
-                      class="flex transition-colors select-none"
-                      :class="{
-                        'bg-[--diff-added] hover:bg-green-800/40': hunk.lines[li]?.type === 'added',
-                        'bg-[--diff-removed] hover:bg-red-800/40': hunk.lines[li]?.type === 'removed',
-                        'hover:bg-[--bg-tertiary]': hunk.lines[li]?.type === 'context',
-                        'text-[--text-secondary]': hunk.lines[li]?.type === 'header',
-                        'text-[--text-primary]': hunk.lines[li]?.type === 'context',
-                        'text-[--diff-added-text]': hunk.lines[li]?.type === 'added',
-                        'text-[--diff-removed-text]': hunk.lines[li]?.type === 'removed',
-                        'bg-blue-600/25 hover:bg-blue-600/35 text-blue-100 outline outline-1 outline-blue-400/70 -outline-offset-1': hunk.lines[li] && selectedLineIds.has(hunk.lines[li].key),
-                      }"
+                      class="relative flex transition-colors select-none"
+                      :class="[
+                        { 'text-[--text-secondary]': hunk.lines[li]?.type === 'header' },
+                        changeLineRowClass(
+                          hunk.lines[li],
+                          !!(hunk.lines[li] && selectedLineIds.has(hunk.lines[li].key)),
+                        ),
+                      ]"
+                      :data-selected="hunk.lines[li] && selectedLineIds.has(hunk.lines[li].key) ? '' : undefined"
                       @mousedown="onDiffLineMouseDown($event, hunk.lines[li]?.key)"
                       @mouseenter="onDiffLineMouseEnter(hunk.lines[li]?.key)"
                     >
@@ -625,10 +642,10 @@ onUnmounted(() => {
                       </template>
                       <span class="px-2.5 whitespace-pre-wrap flex-1 min-w-0">{{ hunk.lines[li]?.content }}</span>
                     </div>
-                    <!-- 叠在行上方：不挡点击/划选；hover 整块时可见描边 + 淡蓝罩 -->
+                    <!-- 叠在行上方：不挡点击/划选；hover 整块时可见描边 + 淡绿罩 -->
                     <div
                       aria-hidden="true"
-                      class="pointer-events-none absolute inset-0 z-[1] rounded-sm border-2 border-transparent opacity-0 transition-[opacity,border-color,background-color] duration-150 group-hover/diffblk:border-blue-500/60 group-hover/diffblk:bg-blue-500/10 group-hover/diffblk:opacity-100"
+                      class="pointer-events-none absolute inset-0 z-[1] rounded-sm border-2 border-transparent opacity-0 transition-[opacity,border-color,background-color] duration-150 group-hover/diffblk:border-green-500/70 group-hover/diffblk:bg-green-500/15 group-hover/diffblk:opacity-100 group-has-[[data-selected]:hover]/diffblk:opacity-0 group-has-[[data-selected]:hover]/diffblk:border-transparent"
                     />
                   </div>
                   <template v-else>
