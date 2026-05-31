@@ -511,7 +511,7 @@ onUnmounted(() => {
         >
           <!-- File header bar -->
           <div
-            class="sticky top-0 z-10 flex min-w-0 items-center gap-2 px-2.5 py-2.5 bg-[--bg-tertiary] border-b border-[--border-color] cursor-pointer select-none"
+            class="sticky top-0 z-10 flex h-12 min-w-0 items-center gap-2 px-2.5 py-2.5 bg-[--bg-tertiary] border-b border-[--border-color] cursor-pointer select-none"
             @click="toggleSection(si)"
           >
             <ChevronDown v-if="!isSectionCollapsed(si)" :size="14" class="flex-shrink-0 text-[--text-secondary]" />
@@ -552,7 +552,7 @@ onUnmounted(() => {
             >
               <!-- Hunk header -->
               <div
-                class="sticky top-12 z-[5] flex min-w-0 items-center gap-2 px-2.5 py-2.5 bg-[--bg-secondary] border-b border-[--border-color] cursor-pointer select-none group"
+                class="sticky top-12 z-[5] flex h-10 min-w-0 items-center gap-2 px-2.5 py-2.5 bg-[--bg-secondary] border-b border-[--border-color] cursor-pointer select-none group"
                 :class="{ 'opacity-60': isHunkCollapsed(si, hi) }"
                 @click="toggleHunk(si, hi)"
               >
@@ -579,7 +579,7 @@ onUnmounted(() => {
                   >
                     <div
                       v-if="showHunkRevert || canStage"
-                      class="flex min-w-0 items-center gap-2 border-y border-[--border-color] bg-[--bg-secondary] px-2.5 py-1.5 text-[10px] text-[--text-secondary] select-none"
+                      class="sticky top-[5.5rem] z-[4] flex min-w-0 shrink-0 items-center gap-2 border-y border-[--border-color] bg-[--bg-secondary] px-2.5 py-1.5 text-[10px] text-[--text-secondary] shadow-sm select-none"
                     >
                       <span class="min-w-0 flex-1 truncate font-mono-ui">
                         {{ selectedLineIdsInBlock(hunk, seg).size > 0 ? `已选 ${selectedLineIdsInBlock(hunk, seg).size} 行` : '变更区块' }}
