@@ -7,7 +7,7 @@ import {
   RefreshCw, ArrowDownToLine, ArrowUpToLine, Archive, Settings,
   FolderTree,
 } from 'lucide-vue-next'
-import type { BranchInfo, AheadBehind, SubtreeInfo } from '../types'
+import type { BranchInfo, AheadBehind, SubmoduleInfo, SubtreeInfo } from '../types'
 import { getSubtreeRemoteConfig, saveSubtreeRemoteConfig, shortCommit } from '../utils/subtree'
 
 const props = defineProps<{
@@ -22,7 +22,9 @@ const props = defineProps<{
   stashEntries: { index: number; message: string; branch: string }[]
   tags: string[]
   subtrees: SubtreeInfo[]
+  submodules: SubmoduleInfo[]
   subtreeActionLoading: string | null
+  submoduleActionLoading: string | null
   aheadBehind: AheadBehind
   fetchLoading: boolean
 }>()
@@ -50,6 +52,7 @@ const emit = defineEmits<{
   pull: []
   subtreePull: [prefix: string, remote: string, branch: string]
   subtreePush: [prefix: string, remote: string, branch: string]
+  updateSubmodule: [path: string]
   settingsOpen: []
   cloneRepo: [url: string, targetDir: string]
 }>()
@@ -198,9 +201,27 @@ const sidebarRemoteExpanded = ref(false)
 const sidebarTagsExpanded = ref(false)
 const sidebarStashesExpanded = ref(false)
 const sidebarSubtreesExpanded = ref(false)
+const sidebarSubmodulesExpanded = ref(false)
 
 function toggleSubtreesSection() {
   sidebarSubtreesExpanded.value = !sidebarSubtreesExpanded.value
+}
+
+function toggleSubmodulesSection() {
+  sidebarSubmodulesExpanded.value = !sidebarSubmodulesExpanded.value
+}
+
+function submoduleStatusLabel(status: SubmoduleInfo['status']): string {
+  switch (status) {
+    case 'modified':
+      return '未同步'
+    case 'uninitialized':
+      return '未初始化'
+    case 'conflict':
+      return '冲突'
+    default:
+      return '干净'
+  }
 }
 
 // --- Subtree pull/push dialog ---
@@ -1069,6 +1090,53 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
                   Push
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Submodules (collapsed by default) -->
+        <div v-if="repoPath" class="mt-1 mb-0.5">
+          <button
+            class="flex items-center gap-1.5 pl-2 w-full text-xs text-[--text-secondary] uppercase tracking-wide hover:text-[--text-primary] transition-colors cursor-pointer"
+            @click="toggleSubmodulesSection"
+          >
+            <ChevronRight v-if="!sidebarSubmodulesExpanded" :size="11" />
+            <ChevronDown v-else :size="11" />
+            <FolderTree :size="11" />
+            <span>Submodules ({{ props.submodules.length }})</span>
+          </button>
+          <div v-if="sidebarSubmodulesExpanded" class="mt-1 space-y-0.5">
+            <div v-if="props.submodules.length === 0" class="text-xs text-[--text-secondary] pl-7 py-1">
+              暂无子模块
+            </div>
+            <div
+              v-for="submodule in props.submodules"
+              :key="submodule.path"
+              class="flex items-start gap-1 pl-5 pr-2 py-1 rounded text-xs text-[--text-secondary] group min-w-0"
+            >
+              <FolderTree :size="12" class="flex-shrink-0 mt-0.5" />
+              <div class="flex-1 min-w-0">
+                <div class="truncate font-mono-ui text-[--text-primary]" :title="submodule.path">{{ submodule.path }}</div>
+                <div class="text-[10px] opacity-70 font-mono-ui truncate">
+                  {{ shortCommit(submodule.head) }}
+                  <span v-if="submodule.refName"> · {{ submodule.refName }}</span>
+                  <span
+                    class="ml-1"
+                    :class="submodule.status === 'clean' ? '' : 'text-[--accent]'"
+                  >
+                    · {{ submoduleStatusLabel(submodule.status) }}
+                  </span>
+                </div>
+              </div>
+              <button
+                class="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-[--bg-tertiary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer disabled:opacity-40"
+                :disabled="props.submoduleActionLoading === submodule.path"
+                title="更新并初始化子模块"
+                @click.stop="emit('updateSubmodule', submodule.path)"
+              >
+                <Loader2 v-if="props.submoduleActionLoading === submodule.path" :size="10" class="animate-spin inline" />
+                <span v-else>Update</span>
+              </button>
             </div>
           </div>
         </div>

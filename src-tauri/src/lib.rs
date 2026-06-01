@@ -130,6 +130,15 @@ pub struct SubtreeInfo {
     pub pending_changes: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmoduleInfo {
+    pub path: String,
+    pub head: String,
+    pub ref_name: Option<String>,
+    pub status: String,
+}
+
 pub struct AppState {
     repo_path: Mutex<Option<String>>,
 }
@@ -979,6 +988,23 @@ fn commit_changes(state: State<'_, AppState>, message: String) -> Result<(), Str
     Ok(())
 }
 
+#[tauri::command]
+fn amend_last_commit(state: State<'_, AppState>, message: String) -> Result<(), String> {
+    let repo = require_repo(&state)?;
+    if message.trim().is_empty() {
+        return Err("empty commit message".to_string());
+    }
+    run_git(&repo, &["commit", "--amend", "-m", &message])?;
+    Ok(())
+}
+
+#[tauri::command]
+fn soft_reset_last_commit(state: State<'_, AppState>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let output = run_git(&repo, &["reset", "--soft", "HEAD~1"])?;
+    Ok(if output.is_empty() { "ok".to_string() } else { output })
+}
+
 /// 是否在索引中（未跟踪文件 `git diff -- path` 恒为空，需走 `--no-index`）。
 fn is_tracked_in_index(repo: &str, rel: &str) -> Result<bool, String> {
     let out = run_git(repo, &["ls-files", "--", rel])?;
@@ -1791,6 +1817,86 @@ async fn subtree_push(
     result.map(|s| if s.is_empty() { "ok".into() } else { s })
 }
 
+fn submodule_status_name(prefix: char) -> &'static str {
+    match prefix {
+        '-' => "uninitialized",
+        '+' => "modified",
+        'U' => "conflict",
+        _ => "clean",
+    }
+}
+
+fn parse_submodule_status_line(line: &str) -> Option<SubmoduleInfo> {
+    let mut chars = line.chars();
+    let prefix = chars.next()?;
+    let rest = chars.as_str().trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+
+    let (head, path_and_ref) = rest.split_once(' ')?;
+    let path_and_ref = path_and_ref.trim();
+    if head.is_empty() || path_and_ref.is_empty() {
+        return None;
+    }
+
+    let (path, ref_name) = if let Some((path, raw_ref)) = path_and_ref.rsplit_once(" (") {
+        (
+            path.trim(),
+            raw_ref
+                .strip_suffix(')')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        )
+    } else {
+        (path_and_ref, None)
+    };
+
+    if path.is_empty() {
+        return None;
+    }
+
+    Some(SubmoduleInfo {
+        path: normalize_path_for_git(path),
+        head: head.to_string(),
+        ref_name,
+        status: submodule_status_name(prefix).to_string(),
+    })
+}
+
+#[tauri::command]
+fn get_submodules(state: State<'_, AppState>) -> Result<Vec<SubmoduleInfo>, String> {
+    let repo = require_repo(&state)?;
+    let raw = run_git_with_config(
+        &repo,
+        &[("core.quotepath", "false")],
+        &["submodule", "status", "--recursive"],
+    )?;
+    Ok(raw
+        .lines()
+        .filter_map(parse_submodule_status_line)
+        .collect())
+}
+
+#[tauri::command]
+async fn update_submodule(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let path = normalize_path_for_git(&path);
+    if path.trim().is_empty() {
+        return Err("submodule path 不能为空".into());
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        run_git(
+            &repo,
+            &["submodule", "update", "--init", "--recursive", "--", &path],
+        )
+    })
+    .await
+    .map_err(|e| format!("task failed: {e}"))?;
+    result.map(|s| if s.is_empty() { "ok".into() } else { s })
+}
+
 // === Tags ===
 
 #[tauri::command]
@@ -2563,6 +2669,8 @@ pub fn run() {
             revert_file,
             delete_file,
             commit_changes,
+            amend_last_commit,
+            soft_reset_last_commit,
             get_file_diff,
             get_git_log,
             get_branches,
@@ -2600,6 +2708,8 @@ pub fn run() {
             get_subtrees,
             subtree_pull,
             subtree_push,
+            get_submodules,
+            update_submodule,
             stash_save,
             stash_list,
             stash_apply,
@@ -2615,4 +2725,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_submodule_status_line_reads_clean_submodule() {
+        let item = parse_submodule_status_line(" 9fceb02 vendor/lib (heads/main)").unwrap();
+
+        assert_eq!(item.path, "vendor/lib");
+        assert_eq!(item.head, "9fceb02");
+        assert_eq!(item.ref_name.as_deref(), Some("heads/main"));
+        assert_eq!(item.status, "clean");
+    }
+
+    #[test]
+    fn parse_submodule_status_line_keeps_paths_with_spaces() {
+        let item = parse_submodule_status_line("+abc1234 third party/lib name (v1.0.0)").unwrap();
+
+        assert_eq!(item.path, "third party/lib name");
+        assert_eq!(item.head, "abc1234");
+        assert_eq!(item.ref_name.as_deref(), Some("v1.0.0"));
+        assert_eq!(item.status, "modified");
+    }
+
+    #[test]
+    fn parse_submodule_status_line_marks_uninitialized() {
+        let item = parse_submodule_status_line("-abc1234 modules/core").unwrap();
+
+        assert_eq!(item.path, "modules/core");
+        assert_eq!(item.ref_name, None);
+        assert_eq!(item.status, "uninitialized");
+    }
 }

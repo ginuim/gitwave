@@ -82,7 +82,13 @@ export function useGraphLaneFilter(
     visibleLaneIds.value = [main.id]
   }
 
+  function showLaneOnly(laneId: string) {
+    if (!lanes.value.some((lane) => lane.id === laneId)) return
+    visibleLaneIds.value = [laneId]
+  }
+
   return {
+    fullLayout,
     lanes,
     visibleLaneIds,
     showLaneFilter,
@@ -92,5 +98,6 @@ export function useGraphLaneFilter(
     toggleLane,
     showAllLanes,
     showMainLaneOnly,
+    showLaneOnly,
   }
 }

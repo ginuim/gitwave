@@ -30,6 +30,7 @@ const emit = defineEmits<{
   selectCommit: [hash: string]
   commitHover: [payload: { hash: string; commits: CommitLog[] }]
   commitAction: [payload: { action: CommitAction; hash: string }]
+  branchTipClick: [ref: string]
 }>()
 
 const hoveredHash = ref<string | null>(null)
@@ -39,6 +40,7 @@ const contextMenu = ref<{ x: number; y: number; hash: string } | null>(null)
 const layout = computed(() => props.graphLayout)
 const laneCount = computed(() => Math.max(props.displayLanes.length, 1))
 const graphWidth = computed(() => laneCount.value * GRAPH_LANE_WIDTH)
+const branchTipNames = computed(() => new Set(props.branchTips.map((tip) => tip.name)))
 
 const focusHash = computed(() => hoveredHash.value ?? props.selectedHash)
 const focusSet = computed(() => collectRelatedHashes(focusHash.value, props.logs))
@@ -120,6 +122,11 @@ function runCommitAction(action: CommitAction) {
   emit('commitAction', { action, hash })
 }
 
+function onRefClick(ref: string) {
+  if (!branchTipNames.value.has(ref)) return
+  emit('branchTipClick', ref)
+}
+
 defineExpose({ clearHover })
 </script>
 
@@ -194,7 +201,10 @@ defineExpose({ clearHover })
           <span
             v-for="ref in log.refs"
             :key="ref"
-            class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent]"
+            class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent] transition-colors pointer-events-auto"
+            :class="branchTipNames.has(ref) ? 'hover:bg-[--accent] hover:text-white cursor-pointer' : ''"
+            :title="branchTipNames.has(ref) ? '只看这个分支泳道' : ref"
+            @click.stop="onRefClick(ref)"
           >{{ ref }}</span>
         </div>
         <div class="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5 text-[10px] text-[--text-secondary] font-mono-ui">

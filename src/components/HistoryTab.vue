@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, toRef, watch } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge, Volume2, VolumeX } from 'lucide-vue-next'
 import type { BranchTip, CommitAction, CommitLog } from '../types'
 import CommitGraphView from './CommitGraphView.vue'
@@ -9,6 +9,7 @@ import {
   formatCommitDate,
   isMergeCommit,
   HISTORY_VIEW_STORAGE_KEY,
+  laneIdForBranchTip,
 } from '../utils/commitGraph'
 import { useLaneHoverSound } from '../utils/useLaneHoverSound'
 import { useGraphLaneFilter } from '../utils/useGraphLaneFilter'
@@ -36,6 +37,7 @@ const { hoverSoundEnabled, toggleHoverSound, onCommitHover, onHoverAreaLeave } =
 )
 
 const {
+  fullLayout,
   lanes,
   visibleLaneIds,
   showLaneFilter,
@@ -45,6 +47,7 @@ const {
   toggleLane,
   showAllLanes,
   showMainLaneOnly,
+  showLaneOnly,
 } = useGraphLaneFilter(toRef(props, 'logs'), toRef(props, 'branchTips'))
 
 function readStoredViewMode(): 'list' | 'graph' {
@@ -60,6 +63,7 @@ const viewMode = ref<'list' | 'graph'>(readStoredViewMode())
 const scrollRoot = ref<HTMLElement | null>(null)
 const graphViewRef = ref<{ clearHover: () => void } | null>(null)
 const contextMenu = ref<{ x: number; y: number; hash: string } | null>(null)
+const branchTipNames = computed(() => new Set(props.branchTips.map((tip) => tip.name)))
 
 watch(viewMode, (mode) => {
   try {
@@ -91,6 +95,14 @@ function runCommitAction(action: CommitAction) {
   contextMenu.value = null
   if (!hash) return
   emit('commitAction', { action, hash })
+}
+
+function focusBranchTip(ref: string) {
+  if (!branchTipNames.value.has(ref)) return
+  const laneId = laneIdForBranchTip(ref, props.branchTips, fullLayout.value)
+  if (!laneId) return
+  viewMode.value = 'graph'
+  showLaneOnly(laneId)
 }
 </script>
 
@@ -206,7 +218,10 @@ function runCommitAction(action: CommitAction) {
             <span
               v-for="ref in log.refs"
               :key="ref"
-              class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent]"
+              class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent] transition-colors"
+              :class="branchTipNames.has(ref) ? 'hover:bg-[--accent] hover:text-white cursor-pointer' : ''"
+              :title="branchTipNames.has(ref) ? '只看这个分支泳道' : ref"
+              @click.stop="focusBranchTip(ref)"
             >{{ ref }}</span>
           </div>
           <div class="flex items-center flex-wrap gap-x-2 gap-y-1 mt-1 text-[10px] text-[--text-secondary] font-mono-ui">
@@ -237,6 +252,7 @@ function runCommitAction(action: CommitAction) {
         :selected-hash="selectedHash"
         @select-commit="emit('selectCommit', $event)"
         @commit-action="emit('commitAction', $event)"
+        @branch-tip-click="focusBranchTip"
         @commit-hover="onCommitHover($event.hash, $event.commits)"
       />
 

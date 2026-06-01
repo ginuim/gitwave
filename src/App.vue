@@ -20,8 +20,10 @@ import type {
   WorktreeState,
   CheckoutMode,
   SubtreeInfo,
+  SubmoduleInfo,
   OperationState,
   CommitAction,
+  CommitPayload,
 } from './types'
 import { isUntrackedPath } from './utils/gitStatus'
 import { applyOptimisticRevertToDiffText } from './utils/diffPatch'
@@ -56,7 +58,9 @@ const pinnedBranches = ref<string[]>([])
 const stashEntries = ref<any[]>([])
 const tags = ref<string[]>([])
 const subtrees = ref<SubtreeInfo[]>([])
+const submodules = ref<SubmoduleInfo[]>([])
 const subtreeActionLoading = ref<string | null>(null)
+const submoduleActionLoading = ref<string | null>(null)
 const settingsOpen = ref(false)
 const settingsRevision = ref(0)
 /** 提交成功后递增，驱动工作区「已提交」短提示（避免用 commitLoading 启发式推断） */
@@ -121,7 +125,7 @@ async function openRepo() {
     const path = await invoke<string>('open_repository')
     repoPath.value = path
     showToast('仓库已打开', 'success')
-    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), stashList()])
+    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), stashList(), refreshSubmodules()])
   } catch (e: any) {
     if (e !== 'dialog cancelled') {
       showToast(String(e))
@@ -147,7 +151,7 @@ onMounted(async () => {
     const path = await invoke<string | null>('get_repo_path')
     repoPath.value = path
     if (path) {
-      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind(), stashList(), refreshSubtrees(), refreshOperationState()])
+    await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind(), stashList(), refreshSubtrees(), refreshSubmodules(), refreshOperationState()])
     }
   } catch (_) {
     // ignore
@@ -195,7 +199,7 @@ async function cloneRepo(url: string, targetDir: string) {
     const path = await invoke<string>('clone_repository', { url, targetDir })
     repoPath.value = path
     showToast('仓库克隆成功', 'success')
-    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), refreshSubtrees()])
+    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), refreshSubtrees(), refreshSubmodules()])
   } catch (e: any) {
     showToast(String(e))
   }
@@ -224,6 +228,15 @@ async function refreshSubtrees() {
     subtrees.value = await invoke<SubtreeInfo[]>('get_subtrees')
   } catch (_) {
     subtrees.value = []
+  }
+}
+
+async function refreshSubmodules() {
+  if (!repoPath.value) return
+  try {
+    submodules.value = await invoke<SubmoduleInfo[]>('get_submodules')
+  } catch (_) {
+    submodules.value = []
   }
 }
 
@@ -257,6 +270,7 @@ async function syncRefresh(opts?: { silentStatus?: boolean }) {
     refreshBranches(),
     refreshAheadBehind(),
     refreshSubtrees(),
+    refreshSubmodules(),
     refreshOperationState(),
   ]
   if (activeTab.value === 'history') {
@@ -274,6 +288,7 @@ async function switchRepo(path: string) {
     await syncRefresh()
     await refreshTags()
     await refreshSubtrees()
+    await refreshSubmodules()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -384,13 +399,15 @@ async function deleteFile(path: string, isStaged: boolean) {
 }
 
 // Commit
-async function commitChanges(message: string) {
+async function commitChanges(payload: CommitPayload) {
   commitLoading.value = true
   let ok = false
   try {
-    await invoke('commit_changes', { message })
-    showToast('提交成功', 'success')
+    const command = payload.amend ? 'amend_last_commit' : 'commit_changes'
+    await invoke(command, { message: payload.message })
+    showToast(payload.amend ? '已修正最后一次提交' : '提交成功', 'success')
     await Promise.all([refreshStatus(), refreshAheadBehind(), refreshSubtrees()])
+    if (activeTab.value === 'history') await refreshHistory()
     ok = true
   } catch (e: any) {
     showToast(String(e))
@@ -398,6 +415,22 @@ async function commitChanges(message: string) {
     commitLoading.value = false
   }
   if (ok) commitSuccessTick.value++
+}
+
+async function softResetLastCommit() {
+  if (!(await confirm('确认 soft reset 最后一次提交？最后一次提交会被撤销，改动保留在 Staged。'))) return
+  try {
+    const result = await invoke<string>('soft_reset_last_commit')
+    showToast(!result || result === 'ok' ? '已 soft reset HEAD~1' : result, 'success')
+    selectedFile.value = null
+    selectedFileIsStaged.value = false
+    selectedCommitHash.value = null
+    selectedCommitMsg.value = ''
+    diffText.value = ''
+    await Promise.all([syncRefresh({ silentStatus: true }), refreshHistory()])
+  } catch (e: any) {
+    showToast(String(e))
+  }
 }
 
 // Select file - show diff
@@ -564,7 +597,7 @@ async function gitPull() {
   try {
     const result = await invoke<string>('git_pull')
     showToast(!result || result === 'ok' ? 'Pull 成功' : result, 'success')
-    await Promise.all([refreshStatus(), refreshAheadBehind(), refreshSubtrees(), refreshOperationState()])
+    await Promise.all([refreshStatus(), refreshAheadBehind(), refreshSubtrees(), refreshSubmodules(), refreshOperationState()])
   } catch (e: any) {
     showToast(String(e))
     await refreshOperationState()
@@ -596,6 +629,19 @@ async function subtreePush(prefix: string, remote: string, branch: string) {
     showToast(String(e))
   } finally {
     subtreeActionLoading.value = null
+  }
+}
+
+async function updateSubmodule(path: string) {
+  submoduleActionLoading.value = path
+  try {
+    const result = await invoke<string>('update_submodule', { path })
+    showToast(!result || result === 'ok' ? `Submodule update 成功：${path}` : result, 'success')
+    await syncRefresh({ silentStatus: true })
+  } catch (e: any) {
+    showToast(String(e))
+  } finally {
+    submoduleActionLoading.value = null
   }
 }
 
@@ -954,7 +1000,9 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :stash-entries="stashEntries"
         :tags="tags"
         :subtrees="subtrees"
+        :submodules="submodules"
         :subtree-action-loading="subtreeActionLoading"
+        :submodule-action-loading="submoduleActionLoading"
         @pin-branch="pinBranch"
         @unpin-branch="unpinBranch"
         @create-tag="createTag"
@@ -968,6 +1016,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         @pull="gitPull"
         @subtree-pull="subtreePull"
         @subtree-push="subtreePush"
+        @update-submodule="updateSubmodule"
         @settings-open="settingsOpen = true"
         @clone-repo="cloneRepo"
       />
@@ -1020,6 +1069,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
             @delete-file="deleteFile"
             @select-file="selectFile"
             @commit="commitChanges"
+            @soft-reset-last-commit="softResetLastCommit"
             @reveal-error="showToast($event)"
             @open-settings="settingsOpen = true"
           />

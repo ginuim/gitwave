@@ -4,10 +4,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { fetch } from '@tauri-apps/plugin-http'
 import { join } from '@tauri-apps/api/path'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2, Trash2 } from 'lucide-vue-next'
-import type { FileStatus, AppSettings, ProviderConfig, ModelConfig, AiStagedDiffContext, SubtreeInfo } from '../types'
+import { FilePlus, FileMinus, FolderOpen, GitCommitVertical, Loader2, Sparkles, AlertCircle, Check, Settings, Undo2, Trash2, RotateCcw } from 'lucide-vue-next'
+import type { FileStatus, AppSettings, ProviderConfig, ModelConfig, AiStagedDiffContext, SubtreeInfo, CommitPayload } from '../types'
 import { isUntrackedFile, isUntrackedPath } from '../utils/gitStatus'
 import { subtreePrefixForPath } from '../utils/subtree'
+import { buildCommitPayload, canSubmitCommit, commitSubmitLabel } from '../utils/commitActions'
 
 const props = defineProps<{
   statuses: FileStatus[]
@@ -28,7 +29,8 @@ const emit = defineEmits<{
   revertFile: [path: string, isStaged: boolean]
   deleteFile: [path: string, isStaged: boolean]
   selectFile: [path: string, isStaged: boolean]
-  commit: [message: string]
+  commit: [payload: CommitPayload]
+  softResetLastCommit: []
   revealError: [message: string]
   openSettings: []
 }>()
@@ -93,6 +95,7 @@ onUnmounted(stopCommitAreaResize)
 
 // === Manual commit state ===
 const commitMessage = ref('')
+const amendLastCommit = ref(false)
 const commitSuccess = ref(false)
 let commitSuccessTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -117,10 +120,17 @@ watch(() => props.commitSuccessTick, (tick, prevTick) => {
   }, 2000)
 })
 
-function handleCommit() {
-  if (!commitMessage.value.trim()) return
-  emit('commit', commitMessage.value)
+function handleCommit(amend = amendLastCommit.value) {
+  if (!canSubmitCommit(commitMessage.value, props.commitLoading, generating.value)) return
+  emit('commit', buildCommitPayload(commitMessage.value, amend))
   commitMessage.value = ''
+}
+
+function handleCommitKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Enter') return
+  if (!e.metaKey && !e.ctrlKey) return
+  e.preventDefault()
+  handleCommit(e.shiftKey ? true : amendLastCommit.value)
 }
 
 // === AI commit state ===
@@ -776,18 +786,40 @@ function subtreeBadge(path: string): string | null {
           v-model="commitMessage"
           class="flex-1 min-h-[60px] w-full px-2.5 py-2.5 rounded-[var(--radius)] bg-[--bg-tertiary] border border-[--border-color] text-xs text-[--text-primary] placeholder-[--text-secondary] resize-none outline-none focus:border-[--accent] transition-colors font-mono-ui leading-relaxed"
           :placeholder="generating ? 'AI 正在生成提交信息...' : '提交信息...'"
-          @keydown.meta.enter="handleCommit"
-          @keydown.ctrl.enter="handleCommit"
+          title="Cmd/Ctrl+Enter 提交，Shift+Cmd/Ctrl+Enter Amend"
+          @keydown="handleCommitKeydown"
         />
+        <div class="mt-2 flex flex-shrink-0 items-center gap-2 text-[10px] text-[--text-secondary]">
+          <label class="flex min-w-0 flex-1 items-center gap-1.5 cursor-pointer select-none">
+            <input
+              v-model="amendLastCommit"
+              type="checkbox"
+              class="h-3.5 w-3.5 accent-[--accent]"
+              :disabled="commitLoading || generating"
+            />
+            <span class="truncate">Amend last commit</span>
+            <span class="hidden sm:inline text-[--text-secondary]">Shift+⌘/Ctrl+Enter</span>
+          </label>
+          <button
+            type="button"
+            class="flex flex-shrink-0 items-center gap-1 rounded-[var(--radius)] border border-[--border-color] px-2 py-1 text-[10px] text-[--text-secondary] transition-colors hover:border-orange-700/60 hover:bg-orange-900/20 hover:text-orange-300 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+            :disabled="commitLoading || generating"
+            title="git reset --soft HEAD~1"
+            @click="emit('softResetLastCommit')"
+          >
+            <RotateCcw :size="11" />
+            Soft reset HEAD~1
+          </button>
+        </div>
         <button
           class="mt-2.5 flex-shrink-0 w-full flex items-center justify-center gap-1.5 px-2.5 py-2.5 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-          :disabled="!commitMessage.trim() || commitLoading || generating"
-          @click="handleCommit"
+          :disabled="!canSubmitCommit(commitMessage, commitLoading, generating)"
+          @click="handleCommit()"
         >
           <Check v-if="commitSuccess && !commitLoading" :size="12" />
           <Loader2 v-else-if="commitLoading" :size="12" class="animate-spin" />
           <GitCommitVertical v-else :size="12" />
-          <span>{{ commitLoading ? '提交中...' : commitSuccess ? '已提交' : 'Commit' }}</span>
+          <span>{{ commitSubmitLabel(amendLastCommit, commitLoading, commitSuccess) }}</span>
         </button>
       </div>
     </div>

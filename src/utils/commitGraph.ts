@@ -1,4 +1,4 @@
-import type { CommitLog } from '../types'
+import type { BranchTip, CommitLog } from '../types'
 
 export const GRAPH_ROW_HEIGHT = 56
 export const GRAPH_LANE_WIDTH = 16
@@ -212,6 +212,18 @@ function laneLabel(
 
 function laneId(column: number): string {
   return `col:${column}`
+}
+
+export function laneIdForBranchTip(
+  branchName: string,
+  branchTips: BranchTip[],
+  layout: CommitGraphLayout,
+): string | null {
+  const tip = branchTips.find((item) => item.name === branchName)
+  if (!tip) return null
+
+  const column = layout.columnByHash[tip.hash]
+  return column === undefined ? null : laneId(column)
 }
 
 export function laneForColumn(lanes: GraphLane[], column: number): GraphLane | undefined {

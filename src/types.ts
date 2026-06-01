@@ -46,6 +46,15 @@ export interface SubtreeInfo {
   pendingChanges: number;
 }
 
+export type SubmoduleStatus = 'clean' | 'modified' | 'uninitialized' | 'conflict';
+
+export interface SubmoduleInfo {
+  path: string;
+  head: string;
+  refName: string | null;
+  status: SubmoduleStatus;
+}
+
 export interface SubtreeRemoteConfig {
   remote: string;
   branch: string;
@@ -65,6 +74,11 @@ export interface CommitLog {
 export interface CommitLogPage {
   commits: CommitLog[];
   hasMore: boolean;
+}
+
+export interface CommitPayload {
+  message: string;
+  amend: boolean;
 }
 
 // Settings types (shared between SettingsDialog and WorkspacePanel)
