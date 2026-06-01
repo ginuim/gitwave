@@ -334,11 +334,18 @@ export function applyOptimisticRevertToDiffText(
   for (const section of sections) {
     const hunkTexts: string[] = []
     for (const hunk of section.hunks) {
-      const remaining = hunk.lines.filter(
-        (line) =>
-          (line.type !== 'added' && line.type !== 'removed') ||
-          !revertedKeys.has(line.key),
-      )
+      const remaining = hunk.lines.flatMap((line): DiffLine[] => {
+        if (!revertedKeys.has(line.key)) return [line]
+        if (line.type === 'added') return []
+        if (line.type === 'removed') {
+          return [{
+            ...line,
+            type: 'context',
+            content: ` ${line.content.slice(1)}`,
+          }]
+        }
+        return [line]
+      })
       const body = serializeHunkBody(remaining)
       if (body) hunkTexts.push(body)
     }

@@ -113,4 +113,23 @@ describe('diffPatch', () => {
     expect(next).toContain('-const e = 5')
     expect(next).toContain('+const e = 50')
   })
+
+  it('keeps reverted removed lines as context so later line numbers do not shift', () => {
+    const [section] = parseDiffSections(SAMPLE_DIFF, null)
+    const [hunk] = section.hunks
+    const removedLine = hunk.lines.find((line) => line.content === '-const b = 2')!
+
+    const next = applyOptimisticRevertToDiffText(SAMPLE_DIFF, null, new Set([removedLine.key]))
+    const [nextSection] = parseDiffSections(next, null)
+    const [nextHunk] = nextSection.hunks
+
+    expect(next).toContain(' const b = 2')
+    expect(next).not.toContain('-const b = 2')
+    expect(nextHunk.lines.find((line) => line.content === ' const d = 4')).toMatchObject({
+      oldLineNumber: 3,
+      newLineNumber: 5,
+    })
+    expect(next).toContain('-const e = 5')
+    expect(next).toContain('+const e = 50')
+  })
 })
