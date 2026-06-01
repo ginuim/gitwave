@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { User, CalendarDays, Hash, GitMerge } from 'lucide-vue-next'
-import type { BranchTip, CommitLog } from '../types'
+import type { BranchTip, CommitAction, CommitLog } from '../types'
 import {
   collectRelatedHashes,
   isPathHighlighted,
@@ -29,10 +29,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   selectCommit: [hash: string]
   commitHover: [payload: { hash: string; commits: CommitLog[] }]
+  commitAction: [payload: { action: CommitAction; hash: string }]
 }>()
 
 const hoveredHash = ref<string | null>(null)
 const hoveredLaneColumn = ref<number | null>(null)
+const contextMenu = ref<{ x: number; y: number; hash: string } | null>(null)
 
 const layout = computed(() => props.graphLayout)
 const laneCount = computed(() => Math.max(props.displayLanes.length, 1))
@@ -106,6 +108,18 @@ function onGraphMouseMove(event: MouseEvent) {
   }
 }
 
+function openCommitMenu(event: MouseEvent, hash: string) {
+  event.preventDefault()
+  contextMenu.value = { x: event.clientX, y: event.clientY, hash }
+}
+
+function runCommitAction(action: CommitAction) {
+  const hash = contextMenu.value?.hash
+  contextMenu.value = null
+  if (!hash) return
+  emit('commitAction', { action, hash })
+}
+
 defineExpose({ clearHover })
 </script>
 
@@ -156,6 +170,7 @@ defineExpose({ clearHover })
       :style="{ top: `${row * GRAPH_ROW_HEIGHT}px`, height: `${GRAPH_ROW_HEIGHT}px` }"
       @mouseenter="onRowEnter(log.hash)"
       @click="emit('selectCommit', log.hash)"
+      @contextmenu="openCommitMenu($event, log.hash)"
     >
       <div class="shrink-0 pointer-events-none" :style="{ width: `${graphWidth}px` }" />
       <div
@@ -226,5 +241,27 @@ defineExpose({ clearHover })
     >
       {{ hoveredLaneLabel }}
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="contextMenu"
+        class="fixed z-[9999] bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-lg p-2 text-xs min-w-[160px]"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @click.stop
+      >
+        <button
+          class="w-full text-left px-2.5 py-2 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="runCommitAction('cherryPick')"
+        >Cherry-pick</button>
+        <button
+          class="w-full text-left px-2.5 py-2 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="runCommitAction('revert')"
+        >Revert commit</button>
+        <button
+          class="w-full text-left px-2.5 py-2 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="runCommitAction('createBranchHere')"
+        >Create branch here</button>
+      </div>
+    </Teleport>
   </div>
 </template>

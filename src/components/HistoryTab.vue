@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, toRef, watch } from 'vue'
 import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge, Volume2, VolumeX } from 'lucide-vue-next'
-import type { BranchTip, CommitLog } from '../types'
+import type { BranchTip, CommitAction, CommitLog } from '../types'
 import CommitGraphView from './CommitGraphView.vue'
 import GraphLaneFilter from './GraphLaneFilter.vue'
 import {
@@ -26,6 +26,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   selectCommit: [hash: string]
+  commitAction: [payload: { action: CommitAction; hash: string }]
   updateFilter: [filter: 'current' | 'all']
   loadMore: []
 }>()
@@ -58,6 +59,7 @@ function readStoredViewMode(): 'list' | 'graph' {
 const viewMode = ref<'list' | 'graph'>(readStoredViewMode())
 const scrollRoot = ref<HTMLElement | null>(null)
 const graphViewRef = ref<{ clearHover: () => void } | null>(null)
+const contextMenu = ref<{ x: number; y: number; hash: string } | null>(null)
 
 watch(viewMode, (mode) => {
   try {
@@ -77,6 +79,18 @@ function onScroll(event: Event) {
 function handleHoverAreaLeave() {
   onHoverAreaLeave()
   graphViewRef.value?.clearHover()
+}
+
+function openCommitMenu(event: MouseEvent, hash: string) {
+  event.preventDefault()
+  contextMenu.value = { x: event.clientX, y: event.clientY, hash }
+}
+
+function runCommitAction(action: CommitAction) {
+  const hash = contextMenu.value?.hash
+  contextMenu.value = null
+  if (!hash) return
+  emit('commitAction', { action, hash })
 }
 </script>
 
@@ -178,6 +192,7 @@ function handleHoverAreaLeave() {
           :class="log.hash === selectedHash ? 'bg-[--bg-tertiary] border-l-2 border-l-[--accent]' : 'hover:bg-[--bg-tertiary]'"
           @mouseenter="onCommitHover(log.hash)"
           @click="emit('selectCommit', log.hash)"
+          @contextmenu="openCommitMenu($event, log.hash)"
         >
           <div class="flex items-center gap-1.5 min-w-0">
             <span class="text-xs text-[--text-primary] font-medium leading-relaxed truncate">{{ log.message }}</span>
@@ -221,6 +236,7 @@ function handleHoverAreaLeave() {
         :branch-tips="branchTips"
         :selected-hash="selectedHash"
         @select-commit="emit('selectCommit', $event)"
+        @commit-action="emit('commitAction', $event)"
         @commit-hover="onCommitHover($event.hash, $event.commits)"
       />
 
@@ -232,5 +248,27 @@ function handleHoverAreaLeave() {
         已加载全部
       </div>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="contextMenu"
+        class="fixed z-[9999] bg-[--bg-tertiary] border border-[--border-color] rounded-[var(--radius)] shadow-lg p-2 text-xs min-w-[160px]"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @click.stop
+      >
+        <button
+          class="w-full text-left px-2.5 py-2 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="runCommitAction('cherryPick')"
+        >Cherry-pick</button>
+        <button
+          class="w-full text-left px-2.5 py-2 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="runCommitAction('revert')"
+        >Revert commit</button>
+        <button
+          class="w-full text-left px-2.5 py-2 rounded-[var(--radius)] text-[--text-primary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer"
+          @click="runCommitAction('createBranchHere')"
+        >Create branch here</button>
+      </div>
+    </Teleport>
   </div>
 </template>

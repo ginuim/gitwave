@@ -18,6 +18,12 @@ import {
   lineRangeSelection,
   type SelectableLineRef,
 } from '../utils/diffLineSelection'
+import {
+  parseConflictBlocks,
+  resolveConflictBlock,
+  type ConflictBlock,
+  type ConflictResolution,
+} from '../utils/conflictMarkers'
 
 const props = defineProps<{
   diffText: string
@@ -33,6 +39,7 @@ const props = defineProps<{
   commitHash: string | null
   /** patch 操作中（stage/revert + refresh 未完成），此时禁用所有 Stage/Revert 按钮 */
   patchStaging?: boolean
+  conflicted?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -41,6 +48,8 @@ const emit = defineEmits<{
   revertFile: [path: string, isStaged: boolean]
   /** 第二参数与当前 diff 一致（Staged / Unstaged）；第三参数为乐观 UI 需移除的行 key */
   revertPatch: [patch: string, isStaged: boolean, revertedKeys: string[]]
+  markResolved: [path: string]
+  conflictFileUpdated: []
 }>()
 
 // Collapsed state per file section (indexed by section index in sections array)
@@ -229,6 +238,50 @@ watch(
   },
   { immediate: true },
 )
+
+// ── Conflict marker resolution ──
+
+const conflictContent = ref('')
+const conflictLoading = ref(false)
+const conflictError = ref<string | null>(null)
+const conflictBlocks = computed<ConflictBlock[]>(() => parseConflictBlocks(conflictContent.value))
+
+async function loadConflictContent() {
+  conflictContent.value = ''
+  conflictError.value = null
+  if (!props.conflicted || !props.filePath || props.workspaceIsStaged || props.commitHash) return
+
+  conflictLoading.value = true
+  try {
+    conflictContent.value = await invoke<string>('read_working_file', { path: props.filePath })
+  } catch (e: any) {
+    conflictError.value = String(e)
+  } finally {
+    conflictLoading.value = false
+  }
+}
+
+watch(
+  () => [props.conflicted, props.filePath, props.workspaceIsStaged, props.commitHash] as const,
+  () => { void loadConflictContent() },
+  { immediate: true },
+)
+
+async function resolveConflict(index: number, resolution: ConflictResolution) {
+  if (!props.filePath) return
+  const next = resolveConflictBlock(conflictContent.value, index, resolution)
+  conflictLoading.value = true
+  conflictError.value = null
+  try {
+    await invoke('write_working_file', { path: props.filePath, content: next })
+    conflictContent.value = next
+    emit('conflictFileUpdated')
+  } catch (e: any) {
+    conflictError.value = String(e)
+  } finally {
+    conflictLoading.value = false
+  }
+}
 
 // ── Stage helpers ──
 
@@ -427,6 +480,45 @@ onUnmounted(() => {
       <span v-if="fileName" class="text-[--text-primary] font-medium truncate font-mono-ui min-w-0 flex-1">{{ fileName }}</span>
       <span v-else class="text-[--text-secondary] shrink-0">选择文件查看差异</span>
       <span v-if="sections.length > 1" class="text-[10px] text-[--text-secondary] font-mono-ui shrink-0">{{ sections.length }} 个文件</span>
+    </div>
+
+    <div
+      v-if="conflicted && filePath && !workspaceIsStaged && !commitHash"
+      class="flex-shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs"
+    >
+      <div class="flex items-center gap-2">
+        <span class="font-medium text-amber-700 dark:text-amber-300">冲突文件</span>
+        <span class="text-[--text-secondary]">{{ conflictBlocks.length }} 个冲突块</span>
+        <div class="flex-1" />
+        <button
+          class="px-2 py-1 rounded-[var(--radius)] bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer disabled:opacity-40"
+          :disabled="conflictBlocks.length > 0 || conflictLoading"
+          @click="emit('markResolved', filePath)"
+        >
+          标记已解决
+        </button>
+      </div>
+      <div v-if="conflictError" class="mt-2 text-red-300">{{ conflictError }}</div>
+      <div v-else-if="conflictLoading" class="mt-2 text-[--text-secondary]">读取冲突内容...</div>
+      <div v-else-if="conflictBlocks.length > 0" class="mt-2 space-y-2">
+        <div
+          v-for="block in conflictBlocks"
+          :key="block.index"
+          class="rounded-[var(--radius)] border border-[--border-color] bg-[--bg-secondary] p-2"
+        >
+          <div class="flex items-center gap-2 mb-2">
+            <span class="font-mono-ui text-[10px] text-[--text-secondary]">Block {{ block.index + 1 }}</span>
+            <div class="flex-1" />
+            <button class="px-2 py-1 rounded-[var(--radius)] bg-[--bg-tertiary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer" @click="resolveConflict(block.index, 'ours')">保留 ours</button>
+            <button class="px-2 py-1 rounded-[var(--radius)] bg-[--bg-tertiary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer" @click="resolveConflict(block.index, 'theirs')">保留 theirs</button>
+            <button class="px-2 py-1 rounded-[var(--radius)] bg-[--bg-tertiary] hover:bg-[--accent] hover:text-white transition-colors cursor-pointer" @click="resolveConflict(block.index, 'both')">保留双方</button>
+          </div>
+          <div class="grid grid-cols-2 gap-2 font-mono-ui text-[10px]">
+            <pre class="whitespace-pre-wrap rounded bg-green-900/20 p-2 text-green-200 overflow-x-auto">{{ block.ours.join('\n') }}</pre>
+            <pre class="whitespace-pre-wrap rounded bg-blue-900/20 p-2 text-blue-200 overflow-x-auto">{{ block.theirs.join('\n') }}</pre>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Diff content -->

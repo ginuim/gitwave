@@ -19,6 +19,7 @@ const props = defineProps<{
   repoPath: string | null
   settingsRevision: number
   subtrees: SubtreeInfo[]
+  conflictedFiles?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -450,6 +451,7 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
 // === File list helpers ===
 const unstagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => !f.isStaged)
 const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStaged)
+const conflictedFileSet = computed(() => new Set(props.conflictedFiles ?? []))
 
 const selectedInUnstaged = computed(
   () =>
@@ -566,7 +568,10 @@ function subtreeBadge(path: string): string | null {
               v-if="subtreeBadge(file.path)"
               class="inline-flex items-center rounded px-1 py-0.5 mr-1 text-[9px] font-semibold bg-sky-900/40 text-sky-300 leading-none align-middle"
               :title="`Subtree: ${subtreeBadge(file.path)}`"
-            >ST</span>{{ file.path }}
+            >ST</span><span
+              v-if="conflictedFileSet.has(file.path)"
+              class="inline-flex items-center rounded px-1 py-0.5 mr-1 text-[9px] font-semibold bg-amber-500/20 text-amber-300 leading-none align-middle"
+            >冲突</span>{{ file.path }}
           </span>
           <button
             v-if="repoPath"
@@ -655,7 +660,10 @@ function subtreeBadge(path: string): string | null {
               v-if="subtreeBadge(file.path)"
               class="inline-flex items-center rounded px-1 py-0.5 mr-1 text-[9px] font-semibold bg-sky-900/40 text-sky-300 leading-none align-middle"
               :title="`Subtree: ${subtreeBadge(file.path)}`"
-            >ST</span>{{ file.path }}
+            >ST</span><span
+              v-if="conflictedFileSet.has(file.path)"
+              class="inline-flex items-center rounded px-1 py-0.5 mr-1 text-[9px] font-semibold bg-amber-500/20 text-amber-300 leading-none align-middle"
+            >冲突</span>{{ file.path }}
           </span>
           <button
             v-if="repoPath"

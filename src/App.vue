@@ -10,7 +10,19 @@ import HistoryTab from './components/HistoryTab.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Loader2 } from 'lucide-vue-next'
-import type { FileStatus, CommitLog, CommitLogPage, BranchInfo, BranchTip, AheadBehind, WorktreeState, CheckoutMode, SubtreeInfo } from './types'
+import type {
+  FileStatus,
+  CommitLog,
+  CommitLogPage,
+  BranchInfo,
+  BranchTip,
+  AheadBehind,
+  WorktreeState,
+  CheckoutMode,
+  SubtreeInfo,
+  OperationState,
+  CommitAction,
+} from './types'
 import { isUntrackedPath } from './utils/gitStatus'
 import { applyOptimisticRevertToDiffText } from './utils/diffPatch'
 
@@ -64,6 +76,29 @@ const pullLoading = ref(false)
 const aheadBehind = ref<AheadBehind>({ ahead: 0, behind: 0 })
 const fetchLoading = ref(false)
 const patchStaging = ref(false)
+const operationState = ref<OperationState>({
+  kind: 'none',
+  conflictedFiles: [],
+  hasConflicts: false,
+  canContinue: false,
+  canAbort: false,
+})
+
+const operationActive = computed(() => operationState.value.kind !== 'none')
+const operationLabel = computed(() => {
+  const state = operationState.value
+  const name =
+    state.kind === 'merge'
+      ? '合并'
+      : state.kind === 'rebase'
+        ? 'Rebase'
+        : state.kind === 'cherryPick'
+          ? 'Cherry-pick'
+          : ''
+  if (!name) return ''
+  if (state.hasConflicts) return `${name} 冲突中 · ${state.conflictedFiles.length} 个文件`
+  return `${name} 进行中 · 等待继续`
+})
 
 // Global refresh indicator (syncs across panels)
 const globalRefreshing = computed(() => branchesLoading.value || historyLoading.value || statusLoading.value)
@@ -112,7 +147,7 @@ onMounted(async () => {
     const path = await invoke<string | null>('get_repo_path')
     repoPath.value = path
     if (path) {
-      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind(), stashList(), refreshSubtrees()])
+      await Promise.all([refreshStatus(), refreshBranches(), refreshAheadBehind(), stashList(), refreshSubtrees(), refreshOperationState()])
     }
   } catch (_) {
     // ignore
@@ -192,12 +227,37 @@ async function refreshSubtrees() {
   }
 }
 
+async function refreshOperationState() {
+  if (!repoPath.value) {
+    operationState.value = {
+      kind: 'none',
+      conflictedFiles: [],
+      hasConflicts: false,
+      canContinue: false,
+      canAbort: false,
+    }
+    return
+  }
+  try {
+    operationState.value = await invoke<OperationState>('get_operation_state')
+  } catch (_) {
+    operationState.value = {
+      kind: 'none',
+      conflictedFiles: [],
+      hasConflicts: false,
+      canContinue: false,
+      canAbort: false,
+    }
+  }
+}
+
 async function syncRefresh(opts?: { silentStatus?: boolean }) {
   const tasks = [
     refreshStatus(opts?.silentStatus ? { silent: true } : undefined),
     refreshBranches(),
     refreshAheadBehind(),
     refreshSubtrees(),
+    refreshOperationState(),
   ]
   if (activeTab.value === 'history') {
     tasks.push(refreshHistory())
@@ -354,6 +414,20 @@ async function selectFile(path: string, isStaged: boolean) {
   }
 }
 
+async function refreshSelectedFileDiff() {
+  if (!selectedFile.value) return
+  try {
+    diffText.value = await invoke<string>('get_file_diff', {
+      path: selectedFile.value,
+      isStaged: selectedFileIsStaged.value,
+    })
+    await refreshOperationState()
+  } catch (e: any) {
+    diffText.value = ''
+    showToast(String(e))
+  }
+}
+
 // Stage a patch (hunk or selected lines)
 async function handleStagePatch(patch: string) {
   if (patchStaging.value) return
@@ -435,6 +509,42 @@ async function selectCommit(hash: string) {
   }
 }
 
+async function handleCommitAction(payload: { action: CommitAction; hash: string }) {
+  const commit = commitLogs.value.find((item) => item.hash === payload.hash)
+  const label = commit ? `${commit.message} (${payload.hash.slice(0, 7)})` : payload.hash.slice(0, 7)
+
+  if (payload.action === 'cherryPick') {
+    if (!(await confirm(`确认 cherry-pick ${label}？`))) return
+    await runHistoryGitAction('cherry_pick_commit', { hash: payload.hash }, 'Cherry-pick 完成')
+    return
+  }
+
+  if (payload.action === 'revert') {
+    if (!(await confirm(`确认 revert ${label}？`))) return
+    await runHistoryGitAction('revert_commit', { hash: payload.hash }, 'Revert 完成')
+    return
+  }
+
+  const name = window.prompt(`从 ${payload.hash.slice(0, 7)} 创建分支：`)
+  if (!name?.trim()) return
+  await runHistoryGitAction(
+    'create_branch_at',
+    { name: name.trim(), hash: payload.hash },
+    `分支「${name.trim()}」已创建`,
+  )
+}
+
+async function runHistoryGitAction(command: string, args: Record<string, string>, successMessage: string) {
+  try {
+    const result = await invoke<string>(command, args)
+    showToast(!result || result === 'ok' ? successMessage : result, 'success')
+    await Promise.all([syncRefresh({ silentStatus: true }), refreshHistory()])
+  } catch (e: any) {
+    showToast(String(e))
+    await Promise.all([refreshStatus({ silent: true }), refreshOperationState()])
+  }
+}
+
 // Push / Pull
 async function gitPush() {
   pushLoading.value = true
@@ -454,9 +564,10 @@ async function gitPull() {
   try {
     const result = await invoke<string>('git_pull')
     showToast(!result || result === 'ok' ? 'Pull 成功' : result, 'success')
-    await Promise.all([refreshStatus(), refreshAheadBehind(), refreshSubtrees()])
+    await Promise.all([refreshStatus(), refreshAheadBehind(), refreshSubtrees(), refreshOperationState()])
   } catch (e: any) {
     showToast(String(e))
+    await refreshOperationState()
   } finally {
     pullLoading.value = false
   }
@@ -593,9 +704,10 @@ async function mergeBranch(name: string) {
   try {
     await invoke('merge_branch', { name })
     showToast(`已将「${name}」合并到当前分支`, 'success')
-    await Promise.all([refreshStatus(), refreshAheadBehind()])
+    await Promise.all([refreshStatus(), refreshAheadBehind(), refreshOperationState()])
   } catch (e: any) {
     showToast(String(e))
+    await refreshOperationState()
   }
 }
 
@@ -609,6 +721,50 @@ async function createBranch(name: string) {
     await Promise.all([refreshBranches(), refreshStatus(), refreshAheadBehind()])
   } catch (e: any) {
     showToast(String(e))
+  }
+}
+
+async function continueOperation() {
+  try {
+    const result = await invoke<string>('continue_operation')
+    showToast(!result || result === 'ok' ? '操作已继续' : result, 'success')
+    await syncRefresh({ silentStatus: true })
+    if (activeTab.value === 'history') await refreshHistory()
+  } catch (e: any) {
+    showToast(String(e))
+    await refreshOperationState()
+  }
+}
+
+async function abortOperation() {
+  if (!(await confirm('确认中止当前 Git 操作？'))) return
+  try {
+    const result = await invoke<string>('abort_operation')
+    showToast(!result || result === 'ok' ? '操作已中止' : result, 'success')
+    selectedFile.value = null
+    selectedCommitHash.value = null
+    diffText.value = ''
+    await syncRefresh({ silentStatus: true })
+  } catch (e: any) {
+    showToast(String(e))
+    await refreshOperationState()
+  }
+}
+
+async function markFileResolved(path: string) {
+  try {
+    await invoke<string>('mark_file_resolved', { path })
+    showToast(`已标记解决：${path}`, 'success')
+    await syncRefresh({ silentStatus: true })
+    if (selectedFile.value === path) {
+      diffText.value = await invoke<string>('get_file_diff', {
+        path,
+        isStaged: selectedFileIsStaged.value,
+      })
+    }
+  } catch (e: any) {
+    showToast(String(e))
+    await refreshOperationState()
   }
 }
 
@@ -819,41 +975,72 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
 
     <!-- Middle panel -->
     <Pane :min-size="28">
-      <!-- Workspace tab -->
-      <WorkspacePanel
-        v-if="activeTab === 'workspace'"
-        :statuses="statuses"
-        :selected-file="selectedFile"
-        :commit-loading="commitLoading"
-        :commit-success-tick="commitSuccessTick"
-        :status-loading="statusLoading"
-        :repo-path="repoPath"
-        :settings-revision="settingsRevision"
-        :subtrees="subtrees"
-        @stage-file="stageFile"
-        @unstage-file="unstageFile"
-        @revert-file="revertFile"
-        @delete-file="deleteFile"
-        @select-file="selectFile"
-        @commit="commitChanges"
-        @reveal-error="showToast($event)"
-        @open-settings="settingsOpen = true"
-      />
-      <!-- History tab -->
-      <HistoryTab
-        v-if="activeTab === 'history'"
-        :logs="commitLogs"
-        :loading="historyLoading"
-        :loading-more="historyLoadingMore"
-        :has-more="historyHasMore"
-        :selected-hash="selectedCommitHash"
-        :filter="historyFilter"
-        :current-branch="currentBranch"
-        :branch-tips="branchTips"
-        @select-commit="selectCommit"
-        @update-filter="historyFilter = $event; refreshHistory()"
-        @load-more="loadMoreHistory"
-      />
+      <div class="h-full min-h-0 flex flex-col">
+        <div
+          v-if="operationActive"
+          class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-amber-500/30 bg-amber-500/10 text-xs"
+        >
+          <span class="font-medium text-amber-700 dark:text-amber-300">{{ operationLabel }}</span>
+          <span v-if="operationState.hasConflicts" class="text-[--text-secondary] truncate">
+            {{ operationState.conflictedFiles.join(', ') }}
+          </span>
+          <div class="flex-1" />
+          <button
+            class="px-2 py-1 rounded-[var(--radius)] text-xs bg-[--accent] text-white hover:bg-[--accent-hover] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="!operationState.canContinue"
+            @click="continueOperation"
+          >
+            Continue
+          </button>
+          <button
+            class="px-2 py-1 rounded-[var(--radius)] text-xs text-red-300 border border-red-800/60 hover:bg-red-900/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="!operationState.canAbort"
+            @click="abortOperation"
+          >
+            Abort
+          </button>
+        </div>
+
+        <div class="flex-1 min-h-0">
+          <!-- Workspace tab -->
+          <WorkspacePanel
+            v-if="activeTab === 'workspace'"
+            :statuses="statuses"
+            :selected-file="selectedFile"
+            :commit-loading="commitLoading"
+            :commit-success-tick="commitSuccessTick"
+            :status-loading="statusLoading"
+            :repo-path="repoPath"
+            :settings-revision="settingsRevision"
+            :subtrees="subtrees"
+            :conflicted-files="operationState.conflictedFiles"
+            @stage-file="stageFile"
+            @unstage-file="unstageFile"
+            @revert-file="revertFile"
+            @delete-file="deleteFile"
+            @select-file="selectFile"
+            @commit="commitChanges"
+            @reveal-error="showToast($event)"
+            @open-settings="settingsOpen = true"
+          />
+          <!-- History tab -->
+          <HistoryTab
+            v-if="activeTab === 'history'"
+            :logs="commitLogs"
+            :loading="historyLoading"
+            :loading-more="historyLoadingMore"
+            :has-more="historyHasMore"
+            :selected-hash="selectedCommitHash"
+            :filter="historyFilter"
+            :current-branch="currentBranch"
+            :branch-tips="branchTips"
+            @select-commit="selectCommit"
+            @commit-action="handleCommitAction"
+            @update-filter="historyFilter = $event; refreshHistory()"
+            @load-more="loadMoreHistory"
+          />
+        </div>
+      </div>
     </Pane>
 
     <!-- Diff panel -->
@@ -868,10 +1055,13 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
         :workspace-is-staged="selectedFileIsStaged"
         :commit-hash="selectedCommitHash"
         :patch-staging="patchStaging"
+        :conflicted="!!selectedFile && operationState.conflictedFiles.includes(selectedFile)"
         @stage-patch="handleStagePatch"
         @stage-file="stageFile"
         @revert-patch="handleRevertPatch"
         @revert-file="revertFile"
+        @mark-resolved="markFileResolved"
+        @conflict-file-updated="refreshSelectedFileDiff"
       />
     </Pane>
   </Splitpanes>

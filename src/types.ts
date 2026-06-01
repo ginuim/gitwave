@@ -28,6 +28,18 @@ export interface WorktreeState {
   inCherryPick: boolean;
 }
 
+export type OperationKind = 'none' | 'merge' | 'rebase' | 'cherryPick';
+
+export interface OperationState {
+  kind: OperationKind;
+  conflictedFiles: string[];
+  hasConflicts: boolean;
+  canContinue: boolean;
+  canAbort: boolean;
+}
+
+export type CommitAction = 'cherryPick' | 'revert' | 'createBranchHere';
+
 export interface SubtreeInfo {
   prefix: string;
   splitCommit: string | null;

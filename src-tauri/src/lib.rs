@@ -103,6 +103,25 @@ pub struct WorktreeState {
     pub in_cherry_pick: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationKind {
+    None,
+    Merge,
+    Rebase,
+    CherryPick,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationState {
+    pub kind: OperationKind,
+    pub conflicted_files: Vec<String>,
+    pub has_conflicts: bool,
+    pub can_continue: bool,
+    pub can_abort: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtreeInfo {
@@ -355,6 +374,33 @@ fn read_worktree_file_bytes(repo: &str, rel: &str) -> Result<Option<Vec<u8>>, St
     Ok(Some(fs::read(&file_canon).map_err(|e| format!("read file: {e}"))?))
 }
 
+fn worktree_file_path(repo: &str, rel: &str) -> Result<PathBuf, String> {
+    ensure_safe_repo_relative_path(rel)?;
+    let root = Path::new(repo);
+    let path = root.join(rel);
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| format!("failed to canonicalize repo root: {e}"))?;
+    if path.exists() {
+        let file_canon = path
+            .canonicalize()
+            .map_err(|e| format!("failed to canonicalize file path: {e}"))?;
+        if !file_canon.starts_with(&root_canon) {
+            return Err("path escapes repository".to_string());
+        }
+        return Ok(file_canon);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid file path".to_string())?
+        .canonicalize()
+        .map_err(|e| format!("failed to canonicalize parent path: {e}"))?;
+    if !parent.starts_with(&root_canon) {
+        return Err("path escapes repository".to_string());
+    }
+    Ok(path)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinaryImagePreview {
@@ -442,6 +488,49 @@ fn is_in_rebase(repo: &str) -> bool {
 
 fn is_in_cherry_pick(repo: &str) -> bool {
     run_git(repo, &["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"]).is_ok()
+}
+
+fn current_operation_kind(repo: &str) -> OperationKind {
+    if is_in_rebase(repo) {
+        OperationKind::Rebase
+    } else if is_in_cherry_pick(repo) {
+        OperationKind::CherryPick
+    } else if is_in_merge(repo) {
+        OperationKind::Merge
+    } else {
+        OperationKind::None
+    }
+}
+
+fn conflicted_files(repo: &str) -> Result<Vec<String>, String> {
+    let raw = run_git_with_config(
+        repo,
+        &[("core.quotepath", "false")],
+        &["diff", "--name-only", "--diff-filter=U"],
+    )?;
+    Ok(raw
+        .lines()
+        .map(|line| normalize_path_for_git(line.trim()))
+        .filter(|line| !line.is_empty())
+        .collect())
+}
+
+fn operation_state(repo: &str) -> Result<OperationState, String> {
+    let kind = current_operation_kind(repo);
+    let conflicted_files = if kind == OperationKind::None {
+        Vec::new()
+    } else {
+        conflicted_files(repo)?
+    };
+    let has_conflicts = !conflicted_files.is_empty();
+    let active = kind != OperationKind::None;
+    Ok(OperationState {
+        kind,
+        conflicted_files,
+        has_conflicts,
+        can_continue: active && !has_conflicts,
+        can_abort: active,
+    })
 }
 
 fn has_worktree_changes(repo: &str) -> Result<bool, String> {
@@ -1061,6 +1150,12 @@ fn create_branch(state: State<'_, AppState>, name: String) -> Result<String, Str
 }
 
 #[tauri::command]
+fn create_branch_at(state: State<'_, AppState>, name: String, hash: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["branch", &name, &hash])
+}
+
+#[tauri::command]
 fn get_worktree_state(state: State<'_, AppState>) -> Result<WorktreeState, String> {
     let repo = require_repo(&state)?;
     Ok(WorktreeState {
@@ -1069,6 +1164,72 @@ fn get_worktree_state(state: State<'_, AppState>) -> Result<WorktreeState, Strin
         in_rebase: is_in_rebase(&repo),
         in_cherry_pick: is_in_cherry_pick(&repo),
     })
+}
+
+#[tauri::command]
+fn get_operation_state(state: State<'_, AppState>) -> Result<OperationState, String> {
+    let repo = require_repo(&state)?;
+    operation_state(&repo)
+}
+
+#[tauri::command]
+fn continue_operation(state: State<'_, AppState>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    match current_operation_kind(&repo) {
+        OperationKind::Rebase => run_git(&repo, &["rebase", "--continue"]),
+        OperationKind::CherryPick => run_git(&repo, &["cherry-pick", "--continue"]),
+        OperationKind::Merge => run_git(&repo, &["commit", "--no-edit"]),
+        OperationKind::None => Err("no operation in progress".to_string()),
+    }
+}
+
+#[tauri::command]
+fn abort_operation(state: State<'_, AppState>) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    match current_operation_kind(&repo) {
+        OperationKind::Rebase => run_git(&repo, &["rebase", "--abort"]),
+        OperationKind::CherryPick => run_git(&repo, &["cherry-pick", "--abort"]),
+        OperationKind::Merge => run_git(&repo, &["merge", "--abort"]),
+        OperationKind::None => Err("no operation in progress".to_string()),
+    }
+}
+
+#[tauri::command]
+fn mark_file_resolved(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let p = normalize_path_for_git(&path);
+    ensure_safe_repo_relative_path(&p)?;
+    run_git(&repo, &["add", "--", &p])
+}
+
+#[tauri::command]
+fn read_working_file(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let p = normalize_path_for_git(&path);
+    let bytes = read_worktree_file_bytes(&repo, &p)?
+        .ok_or_else(|| "file does not exist".to_string())?;
+    String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8".to_string())
+}
+
+#[tauri::command]
+fn write_working_file(state: State<'_, AppState>, path: String, content: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let p = normalize_path_for_git(&path);
+    let file = worktree_file_path(&repo, &p)?;
+    fs::write(&file, content).map_err(|e| format!("write file: {e}"))?;
+    Ok("ok".to_string())
+}
+
+#[tauri::command]
+fn cherry_pick_commit(state: State<'_, AppState>, hash: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["cherry-pick", &hash])
+}
+
+#[tauri::command]
+fn revert_commit(state: State<'_, AppState>, hash: String) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    run_git(&repo, &["revert", &hash])
 }
 
 #[tauri::command]
@@ -2414,7 +2575,16 @@ pub fn run() {
             delete_branch,
             merge_branch,
             create_branch,
+            create_branch_at,
             get_worktree_state,
+            get_operation_state,
+            continue_operation,
+            abort_operation,
+            mark_file_resolved,
+            read_working_file,
+            write_working_file,
+            cherry_pick_commit,
+            revert_commit,
             checkout_branch,
             checkout_remote_branch,
             checkout_with_mode,
