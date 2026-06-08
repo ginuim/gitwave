@@ -42,7 +42,13 @@ const MIN_COMMIT_AREA_HEIGHT = 140
 const MAX_COMMIT_AREA_HEIGHT = 560
 
 const panelRef = ref<HTMLElement | null>(null)
+const workspaceScrollRef = ref<HTMLElement | null>(null)
+const unstagedListRef = ref<HTMLElement | null>(null)
+const stagedListRef = ref<HTMLElement | null>(null)
 const commitAreaHeight = ref(DEFAULT_COMMIT_AREA_HEIGHT)
+const workspaceScrollTop = ref(0)
+const FILE_ROW_HEIGHT = 48
+const FILE_ROW_OVERSCAN = 8
 
 function clampCommitAreaHeight(height: number): number {
   const panelMax = panelRef.value
@@ -459,19 +465,19 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
 }
 
 // === File list helpers ===
-const unstagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => !f.isStaged)
-const stagedFiles = (statuses: FileStatus[]) => statuses.filter((f) => f.isStaged)
+const unstagedFiles = computed(() => props.statuses.filter((f) => !f.isStaged))
+const stagedFiles = computed(() => props.statuses.filter((f) => f.isStaged))
 const conflictedFileSet = computed(() => new Set(props.conflictedFiles ?? []))
 
 const selectedInUnstaged = computed(
   () =>
   !!props.selectedFile &&
-  unstagedFiles(props.statuses).some((f) => f.path === props.selectedFile),
+  unstagedFiles.value.some((f) => f.path === props.selectedFile),
 )
 const selectedInStaged = computed(
   () =>
   !!props.selectedFile &&
-  stagedFiles(props.statuses).some((f) => f.path === props.selectedFile),
+  stagedFiles.value.some((f) => f.path === props.selectedFile),
 )
 
 const selectedIsUntracked = computed(
@@ -492,14 +498,35 @@ async function showInFolder(relPath: string, e: Event) {
 function subtreeBadge(path: string): string | null {
   return subtreePrefixForPath(path, props.subtrees)
 }
+
+function onWorkspaceScroll(event: Event) {
+  workspaceScrollTop.value = (event.currentTarget as HTMLElement).scrollTop
+}
+
+function virtualWindow(files: FileStatus[], listEl: HTMLElement | null) {
+  const viewportHeight = workspaceScrollRef.value?.clientHeight ?? 0
+  const listTop = listEl?.offsetTop ?? 0
+  const firstVisible = Math.floor((workspaceScrollTop.value - listTop) / FILE_ROW_HEIGHT)
+  const visibleCount = Math.ceil(viewportHeight / FILE_ROW_HEIGHT)
+  const start = Math.max(0, firstVisible - FILE_ROW_OVERSCAN)
+  const end = Math.min(files.length, Math.max(0, firstVisible) + visibleCount + FILE_ROW_OVERSCAN)
+  return {
+    items: files.slice(start, end),
+    top: start * FILE_ROW_HEIGHT,
+    bottom: Math.max(0, (files.length - end) * FILE_ROW_HEIGHT),
+  }
+}
+
+const visibleUnstaged = computed(() => virtualWindow(unstagedFiles.value, unstagedListRef.value))
+const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedListRef.value))
 </script>
 
 <template>
   <div ref="panelRef" class="h-full flex flex-col bg-[--bg-secondary] min-w-[320px]">
     <!-- Unstaged Changes -->
-    <div class="flex-1 overflow-y-auto min-h-0">
+    <div ref="workspaceScrollRef" class="flex-1 overflow-y-auto min-h-0" @scroll="onWorkspaceScroll">
       <div class="flex items-center justify-between gap-2 px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10 min-w-0">
-        <span class="flex-shrink-0 whitespace-nowrap">Unstaged ({{ unstagedFiles(statuses).length }})</span>
+        <span class="flex-shrink-0 whitespace-nowrap">Unstaged ({{ unstagedFiles.length }})</span>
         <div class="flex items-center gap-1 flex-nowrap flex-shrink-0 overflow-x-auto">
           <button
             v-if="!selectedIsUntracked"
@@ -527,9 +554,9 @@ function subtreeBadge(path: string): string | null {
             <span>Stage</span>
           </button>
           <button
-            v-if="unstagedFiles(statuses).length > 0"
+            v-if="unstagedFiles.length > 0"
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
-            @click="unstagedFiles(statuses).forEach(f => emit('stageFile', f.path))"
+            @click="unstagedFiles.forEach(f => emit('stageFile', f.path))"
           >
             <FilePlus :size="12" />
             <span>全部 Stage</span>
@@ -540,14 +567,15 @@ function subtreeBadge(path: string): string | null {
         <Loader2 :size="12" class="animate-spin mr-2" />
         <span class="text-xs">加载中...</span>
       </div>
-      <div v-else-if="unstagedFiles(statuses).length === 0" class="px-2.5 py-2.5 text-xs text-[--text-secondary]">
+      <div v-else-if="unstagedFiles.length === 0" class="px-2.5 py-2.5 text-xs text-[--text-secondary]">
         没有 Unstaged 变更
       </div>
-      <div v-else>
+      <div v-else ref="unstagedListRef">
+        <div :style="{ height: `${visibleUnstaged.top}px` }" />
         <div
-          v-for="file in unstagedFiles(statuses)"
+          v-for="file in visibleUnstaged.items"
           :key="file.path"
-          class="flex items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
+          class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
           :class="{ 'bg-green-900/20': selectedFile === file.path }"
           @click="emit('selectFile', file.path, file.isStaged)"
         >
@@ -594,12 +622,13 @@ function subtreeBadge(path: string): string | null {
           </button>
           <span class="flex-shrink-0 text-[--diff-removed-text] font-mono-ui text-[10px]">{{ file.status }}</span>
         </div>
+        <div :style="{ height: `${visibleUnstaged.bottom}px` }" />
       </div>
 
       <!-- Staged Changes -->
       <div class="flex items-center justify-between gap-2 px-2.5 py-2.5 text-xs text-[--text-secondary] uppercase tracking-wide bg-[--bg-tertiary] border-b border-[--border-color] sticky top-0 z-10 min-w-0">
-        <span class="flex-shrink-0 whitespace-nowrap">Staged ({{ stagedFiles(statuses).length }})</span>
-        <div v-if="stagedFiles(statuses).length > 0" class="flex items-center gap-1 flex-nowrap flex-shrink-0 overflow-x-auto">
+        <span class="flex-shrink-0 whitespace-nowrap">Staged ({{ stagedFiles.length }})</span>
+        <div v-if="stagedFiles.length > 0" class="flex items-center gap-1 flex-nowrap flex-shrink-0 overflow-x-auto">
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInStaged"
@@ -626,21 +655,22 @@ function subtreeBadge(path: string): string | null {
           </button>
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
-            @click="stagedFiles(statuses).forEach(f => emit('unstageFile', f.path))"
+            @click="stagedFiles.forEach(f => emit('unstageFile', f.path))"
           >
             <FileMinus :size="12" />
             <span>全部 Unstage</span>
           </button>
         </div>
       </div>
-      <div v-if="stagedFiles(statuses).length === 0" class="px-2.5 py-2.5 text-xs text-[--text-secondary]">
+      <div v-if="stagedFiles.length === 0" class="px-2.5 py-2.5 text-xs text-[--text-secondary]">
         没有 Staged 变更
       </div>
-      <div v-else>
+      <div v-else ref="stagedListRef">
+        <div :style="{ height: `${visibleStaged.top}px` }" />
         <div
-          v-for="file in stagedFiles(statuses)"
+          v-for="file in visibleStaged.items"
           :key="file.path"
-          class="flex items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
+          class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
           :class="{ 'bg-red-900/20': selectedFile === file.path }"
           @click="emit('selectFile', file.path, file.isStaged)"
         >
@@ -686,6 +716,7 @@ function subtreeBadge(path: string): string | null {
           </button>
           <span class="flex-shrink-0 text-[--diff-added-text] font-mono-ui text-[10px]">{{ file.status }}</span>
         </div>
+        <div :style="{ height: `${visibleStaged.bottom}px` }" />
       </div>
     </div>
 

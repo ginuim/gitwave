@@ -19,6 +19,7 @@ export interface BranchTip {
 export interface AheadBehind {
   ahead: number;
   behind: number;
+  unpushedHashes: string[];
 }
 
 export interface WorktreeState {

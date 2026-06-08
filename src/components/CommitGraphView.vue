@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { User, CalendarDays, Hash, GitMerge } from 'lucide-vue-next'
+import { User, CalendarDays, Hash, GitMerge, ArrowUpToLine } from 'lucide-vue-next'
 import type { BranchTip, CommitAction, CommitLog } from '../types'
 import {
   collectRelatedHashes,
@@ -24,6 +24,7 @@ const props = defineProps<{
   selectedHash: string | null
   graphLayout: CommitGraphLayout
   displayLanes: GraphLane[]
+  unpushedHashes: string[]
 }>()
 
 const emit = defineEmits<{
@@ -41,6 +42,7 @@ const layout = computed(() => props.graphLayout)
 const laneCount = computed(() => Math.max(props.displayLanes.length, 1))
 const graphWidth = computed(() => laneCount.value * GRAPH_LANE_WIDTH)
 const branchTipNames = computed(() => new Set(props.branchTips.map((tip) => tip.name)))
+const unpushedHashSet = computed(() => new Set(props.unpushedHashes))
 
 const focusHash = computed(() => hoveredHash.value ?? props.selectedHash)
 const focusSet = computed(() => collectRelatedHashes(focusHash.value, props.logs))
@@ -197,6 +199,14 @@ defineExpose({ clearHover })
           >
             <GitMerge :size="9" />
             合并
+          </span>
+          <span
+            v-if="unpushedHashSet.has(log.hash)"
+            class="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent]"
+            title="尚未推送到远程"
+          >
+            <ArrowUpToLine :size="9" />
+            未推送
           </span>
           <span
             v-for="ref in log.refs"

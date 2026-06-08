@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { Splitpanes, Pane } from 'splitpanes'
 import 'splitpanes/dist/splitpanes.css'
 import SidebarPanel from './components/SidebarPanel.vue'
@@ -77,7 +79,7 @@ const historyHasMore = ref(false)
 const HISTORY_PAGE_SIZE = 50
 const pushLoading = ref(false)
 const pullLoading = ref(false)
-const aheadBehind = ref<AheadBehind>({ ahead: 0, behind: 0 })
+const aheadBehind = ref<AheadBehind>({ ahead: 0, behind: 0, unpushedHashes: [] })
 const fetchLoading = ref(false)
 const patchStaging = ref(false)
 const operationState = ref<OperationState>({
@@ -119,13 +121,20 @@ function showToast(message: string, type: 'error' | 'success' = 'error') {
   }, 6000)
 }
 
+const repoDragOver = ref(false)
+let unlistenDragDrop: (() => void) | null = null
+
+async function applyOpenedRepo(path: string) {
+  repoPath.value = path
+  showToast('仓库已打开', 'success')
+  await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), stashList(), refreshSubmodules()])
+}
+
 // Open repository
 async function openRepo() {
   try {
     const path = await invoke<string>('open_repository')
-    repoPath.value = path
-    showToast('仓库已打开', 'success')
-    await Promise.all([syncRefresh(), refreshRecentRepos(), refreshTags(), stashList(), refreshSubmodules()])
+    await applyOpenedRepo(path)
   } catch (e: any) {
     if (e !== 'dialog cancelled') {
       showToast(String(e))
@@ -133,16 +142,52 @@ async function openRepo() {
   }
 }
 
-let debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null
+async function openRepoFromDrop(paths: string[]) {
+  const path = paths.find((p) => p.trim())
+  if (!path) return
+  try {
+    const opened = await invoke<string>('open_repository_at_path', { path: path.trim() })
+    await applyOpenedRepo(opened)
+  } catch (e: any) {
+    showToast(String(e))
+  }
+}
 
-function refreshWorkspaceIfVisible() {
+let debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let refreshInFlight = false
+let refreshQueued = false
+let statusRequestSeq = 0
+let historyRequestSeq = 0
+let unlistenRepoChanged: UnlistenFn | null = null
+
+function requestRepoRefresh(opts?: { immediate?: boolean }) {
   if (!repoPath.value) return
   if (document.visibilityState === 'hidden') return
   if (debouncedRefreshTimer) clearTimeout(debouncedRefreshTimer)
   debouncedRefreshTimer = setTimeout(() => {
     debouncedRefreshTimer = null
-    void syncRefresh({ silentStatus: true })
-  }, 400)
+    void drainRepoRefreshQueue()
+  }, opts?.immediate ? 0 : 400)
+}
+
+function refreshWorkspaceIfVisible() {
+  requestRepoRefresh()
+}
+
+async function drainRepoRefreshQueue() {
+  if (refreshInFlight) {
+    refreshQueued = true
+    return
+  }
+  refreshInFlight = true
+  try {
+    do {
+      refreshQueued = false
+      await syncRefresh({ silentStatus: true })
+    } while (refreshQueued)
+  } finally {
+    refreshInFlight = false
+  }
 }
 
 // Get repo path on mount
@@ -161,12 +206,36 @@ onMounted(async () => {
   await refreshPinnedBranches()
   await refreshTags()
 
+  try {
+    unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === 'over' || event.payload.type === 'enter') {
+        repoDragOver.value = true
+      } else if (event.payload.type === 'drop') {
+        repoDragOver.value = false
+        void openRepoFromDrop(event.payload.paths)
+      } else {
+        repoDragOver.value = false
+      }
+    })
+  } catch (_) {
+    // ignore when not running inside Tauri
+  }
+
   window.addEventListener('focus', refreshWorkspaceIfVisible)
   document.addEventListener('visibilitychange', refreshWorkspaceIfVisible)
+  try {
+    unlistenRepoChanged = await listen('repo-status-changed', () => requestRepoRefresh())
+  } catch (_) {
+    // ignore when not running inside Tauri
+  }
 })
 
 onUnmounted(() => {
   if (debouncedRefreshTimer) clearTimeout(debouncedRefreshTimer)
+  unlistenDragDrop?.()
+  unlistenDragDrop = null
+  unlistenRepoChanged?.()
+  unlistenRepoChanged = null
   window.removeEventListener('focus', refreshWorkspaceIfVisible)
   document.removeEventListener('visibilitychange', refreshWorkspaceIfVisible)
 })
@@ -297,10 +366,13 @@ async function switchRepo(path: string) {
 // Refresh status（silent：后台同步，不挡整个列表的加载态）
 async function refreshStatus(opts?: { silent?: boolean }) {
   if (!repoPath.value) return
+  const requestId = ++statusRequestSeq
   const silent = opts?.silent ?? false
   if (!silent) statusLoading.value = true
   try {
-    statuses.value = await invoke<FileStatus[]>('get_git_status')
+    const nextStatuses = await invoke<FileStatus[]>('get_git_status')
+    if (requestId !== statusRequestSeq) return
+    statuses.value = nextStatuses
     // Clear selection if selected file no longer exists
     const paths = statuses.value.map((s) => s.path)
     if (selectedFile.value && !paths.includes(selectedFile.value)) {
@@ -913,15 +985,18 @@ async function fetchHistoryPage(skip: number): Promise<CommitLogPage> {
 
 async function refreshHistory() {
   if (!repoPath.value) return
+  const requestId = ++historyRequestSeq
   historyLoading.value = true
   try {
+    await refreshAheadBehind()
     const page = await fetchHistoryPage(0)
+    if (requestId !== historyRequestSeq) return
     commitLogs.value = page.commits
     historyHasMore.value = page.hasMore
   } catch (e: any) {
     showToast(String(e))
   } finally {
-    historyLoading.value = false
+    if (requestId === historyRequestSeq) historyLoading.value = false
   }
 }
 
@@ -1084,6 +1159,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
             :filter="historyFilter"
             :current-branch="currentBranch"
             :branch-tips="branchTips"
+            :unpushed-hashes="aheadBehind.unpushedHashes"
             @select-commit="selectCommit"
             @commit-action="handleCommitAction"
             @update-filter="historyFilter = $event; refreshHistory()"
@@ -1115,6 +1191,18 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
       />
     </Pane>
   </Splitpanes>
+
+    <!-- Drag-and-drop overlay -->
+    <Transition name="toast">
+      <div
+        v-if="repoDragOver"
+        class="fixed inset-0 z-[10000] flex items-center justify-center bg-[--accent]/10 border-2 border-dashed border-[--accent]/60 pointer-events-none"
+      >
+        <div class="px-4 py-3 rounded-[var(--radius)] bg-[--bg-tertiary] border border-[--border-color] shadow-lg text-sm text-[--text-primary]">
+          拖放 Git 仓库目录到此处
+        </div>
+      </div>
+    </Transition>
 
     <!-- Global loading indicator -->
     <div

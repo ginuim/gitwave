@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue'
-import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge, Volume2, VolumeX } from 'lucide-vue-next'
+import { User, CalendarDays, Hash, Loader2, List, GitBranch, GitMerge, Volume2, VolumeX, ArrowUpToLine } from 'lucide-vue-next'
 import type { BranchTip, CommitAction, CommitLog } from '../types'
 import CommitGraphView from './CommitGraphView.vue'
 import GraphLaneFilter from './GraphLaneFilter.vue'
@@ -23,6 +23,7 @@ const props = defineProps<{
   filter: 'current' | 'all'
   currentBranch: string
   branchTips: BranchTip[]
+  unpushedHashes: string[]
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +65,7 @@ const scrollRoot = ref<HTMLElement | null>(null)
 const graphViewRef = ref<{ clearHover: () => void } | null>(null)
 const contextMenu = ref<{ x: number; y: number; hash: string } | null>(null)
 const branchTipNames = computed(() => new Set(props.branchTips.map((tip) => tip.name)))
+const unpushedHashSet = computed(() => new Set(props.unpushedHashes))
 
 watch(viewMode, (mode) => {
   try {
@@ -216,6 +218,14 @@ function focusBranchTip(ref: string) {
               合并
             </span>
             <span
+              v-if="unpushedHashSet.has(log.hash)"
+              class="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent]"
+              title="尚未推送到远程"
+            >
+              <ArrowUpToLine :size="9" />
+              未推送
+            </span>
+            <span
               v-for="ref in log.refs"
               :key="ref"
               class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono-ui bg-[--accent]/15 text-[--accent] transition-colors"
@@ -250,6 +260,7 @@ function focusBranchTip(ref: string) {
         :display-lanes="displayLanes"
         :branch-tips="branchTips"
         :selected-hash="selectedHash"
+        :unpushed-hashes="unpushedHashes"
         @select-commit="emit('selectCommit', $event)"
         @commit-action="emit('commitAction', $event)"
         @branch-tip-click="focusBranchTip"

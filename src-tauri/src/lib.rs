@@ -1,14 +1,17 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
+use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
-use tauri::{Manager, State};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Semaphore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +144,12 @@ pub struct SubmoduleInfo {
 
 pub struct AppState {
     repo_path: Mutex<Option<String>>,
+    repo_watcher: Mutex<Option<RepoWatcher>>,
+    git_gate: Arc<Semaphore>,
+}
+
+struct RepoWatcher {
+    _watcher: RecommendedWatcher,
 }
 
 fn file_path_to_string(fp: tauri_plugin_dialog::FilePath) -> String {
@@ -225,12 +234,27 @@ fn hide_git_child_console(cmd: &mut Command) {
     }
 }
 
+fn log_git_perf(repo: &str, args: &[&str], elapsed: Duration, success: bool, output_bytes: usize) {
+    eprintln!(
+        "[gitwave:git] success={} elapsed_ms={} bytes={} repo={} command=\"git {}\"",
+        success,
+        elapsed.as_millis(),
+        output_bytes,
+        repo,
+        args.join(" ")
+    );
+}
+
 fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
     run_git_with_config(repo, &[], args)
 }
 
 /// 与 `run_git` 相同，但可在子命令前注入 `-c key=value`（如关闭 quotepath）。
-fn run_git_with_config(repo: &str, config: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
+fn run_git_with_config(
+    repo: &str,
+    config: &[(&str, &str)],
+    args: &[&str],
+) -> Result<String, String> {
     let mut cmd = Command::new("git");
     hide_git_child_console(&mut cmd);
     cmd.current_dir(repo);
@@ -239,9 +263,18 @@ fn run_git_with_config(repo: &str, config: &[(&str, &str)], args: &[&str]) -> Re
     }
     cmd.args(args);
     set_git_utf8_env(&mut cmd);
+    let started = Instant::now();
     let output = cmd
         .output()
         .map_err(|e| format!("failed to spawn git: {e}"))?;
+    let output_bytes = output.stdout.len() + output.stderr.len();
+    log_git_perf(
+        repo,
+        args,
+        started.elapsed(),
+        output.status.success(),
+        output_bytes,
+    );
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -249,14 +282,34 @@ fn run_git_with_config(repo: &str, config: &[(&str, &str)], args: &[&str]) -> Re
 }
 
 fn run_git_bytes(repo: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    run_git_bytes_with_config(repo, &[], args)
+}
+
+fn run_git_bytes_with_config(
+    repo: &str,
+    config: &[(&str, &str)],
+    args: &[&str],
+) -> Result<Vec<u8>, String> {
     let mut cmd = Command::new("git");
     hide_git_child_console(&mut cmd);
     cmd.current_dir(repo);
+    for (key, value) in config {
+        cmd.arg("-c").arg(format!("{key}={value}"));
+    }
     cmd.args(args);
     set_git_utf8_env(&mut cmd);
+    let started = Instant::now();
     let output = cmd
         .output()
         .map_err(|e| format!("failed to spawn git: {e}"))?;
+    let output_bytes = output.stdout.len() + output.stderr.len();
+    log_git_perf(
+        repo,
+        args,
+        started.elapsed(),
+        output.status.success(),
+        output_bytes,
+    );
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -271,11 +324,15 @@ fn run_git_diff(repo: &str, args: &[&str]) -> Result<String, String> {
     cmd.current_dir(repo);
     cmd.args(args);
     set_git_utf8_env(&mut cmd);
+    let started = Instant::now();
     let output = cmd
         .output()
         .map_err(|e| format!("failed to spawn git: {e}"))?;
     let code = output.status.code().unwrap_or(0);
-    if code != 0 && code != 1 {
+    let success = code == 0 || code == 1;
+    let output_bytes = output.stdout.len() + output.stderr.len();
+    log_git_perf(repo, args, started.elapsed(), success, output_bytes);
+    if !success {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -303,9 +360,18 @@ fn run_git_with_stdin(repo: &str, args: &[&str], input: &[u8]) -> Result<String,
             .write_all(input)
             .map_err(|e| format!("failed to write patch: {e}"))?;
     }
+    let started = Instant::now();
     let output = child
         .wait_with_output()
         .map_err(|e| format!("failed to wait for git: {e}"))?;
+    let output_bytes = output.stdout.len() + output.stderr.len();
+    log_git_perf(
+        repo,
+        args,
+        started.elapsed(),
+        output.status.success(),
+        output_bytes,
+    );
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -350,9 +416,19 @@ fn read_git_blob_bytes(repo: &str, rev_path: &str) -> Result<Option<Vec<u8>>, St
     cmd.current_dir(repo);
     cmd.args(["rev-parse", "-q", "--verify", rev_path]);
     set_git_utf8_env(&mut cmd);
+    let started = Instant::now();
     let out = cmd
         .output()
         .map_err(|e| format!("failed to spawn git: {e}"))?;
+    let args = ["rev-parse", "-q", "--verify", rev_path];
+    let output_bytes = out.stdout.len() + out.stderr.len();
+    log_git_perf(
+        repo,
+        &args,
+        started.elapsed(),
+        out.status.success(),
+        output_bytes,
+    );
     if !out.status.success() {
         return Ok(None);
     }
@@ -380,7 +456,9 @@ fn read_worktree_file_bytes(repo: &str, rel: &str) -> Result<Option<Vec<u8>>, St
     if !file_canon.starts_with(&root_canon) {
         return Err("path escapes repository".to_string());
     }
-    Ok(Some(fs::read(&file_canon).map_err(|e| format!("read file: {e}"))?))
+    Ok(Some(
+        fs::read(&file_canon).map_err(|e| format!("read file: {e}"))?,
+    ))
 }
 
 fn worktree_file_path(repo: &str, rel: &str) -> Result<PathBuf, String> {
@@ -434,8 +512,7 @@ fn get_binary_image_preview(
         "unstaged" => {
             let old = read_git_blob_bytes(&repo, &format!(":0:{rel}"))?
                 .map(|b| bytes_to_data_url(&b, mime));
-            let new = read_worktree_file_bytes(&repo, &rel)?
-                .map(|b| bytes_to_data_url(&b, mime));
+            let new = read_worktree_file_bytes(&repo, &rel)?.map(|b| bytes_to_data_url(&b, mime));
             Ok(BinaryImagePreview {
                 old_data_url: old,
                 new_data_url: new,
@@ -452,7 +529,8 @@ fn get_binary_image_preview(
             })
         }
         "commit" => {
-            let hash = commit_hash.ok_or_else(|| "commitHash required for commit preview".to_string())?;
+            let hash =
+                commit_hash.ok_or_else(|| "commitHash required for commit preview".to_string())?;
             let old = read_git_blob_bytes(&repo, &format!("{hash}^:{rel}"))?
                 .map(|b| bytes_to_data_url(&b, mime));
             let new = read_git_blob_bytes(&repo, &format!("{hash}:{rel}"))?
@@ -604,8 +682,7 @@ fn load_recent_repos(app: &tauri::AppHandle) -> Vec<String> {
 
 fn save_recent_repos(app: &tauri::AppHandle, repos: &[String]) -> Result<(), String> {
     let path = repos_file_path(app)?;
-    let json =
-        serde_json::to_string(repos).map_err(|e| format!("serialization error: {e}"))?;
+    let json = serde_json::to_string(repos).map_err(|e| format!("serialization error: {e}"))?;
     fs::write(&path, &json).map_err(|e| format!("write error: {e}"))?;
     Ok(())
 }
@@ -661,12 +738,58 @@ fn load_pinned_branches(app: &tauri::AppHandle) -> Vec<String> {
 
 fn save_pinned_branches(app: &tauri::AppHandle, branches: &[String]) -> Result<(), String> {
     let path = pinned_file_path(app)?;
-    let json =
-        serde_json::to_string(branches).map_err(|e| format!("serialization error: {e}"))?;
+    let json = serde_json::to_string(branches).map_err(|e| format!("serialization error: {e}"))?;
     fs::write(&path, &json).map_err(|e| format!("write error: {e}"))?;
     Ok(())
 }
 
+fn should_emit_repo_change(kind: &EventKind, paths: &[PathBuf]) -> bool {
+    if matches!(kind, EventKind::Access(_)) {
+        return false;
+    }
+    paths.iter().any(|path| {
+        let path_text = path.to_string_lossy();
+        !(path_text.contains("/target/")
+            || path_text.contains("\\target\\")
+            || path_text.contains("/node_modules/")
+            || path_text.contains("\\node_modules\\"))
+    })
+}
+
+fn start_repo_watcher(app: &tauri::AppHandle, repo: &str) -> Result<(), String> {
+    let repo_path = PathBuf::from(repo);
+    let app_handle = app.clone();
+    let (tx, rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        while rx.recv().is_ok() {
+            while rx.recv_timeout(Duration::from_millis(350)).is_ok() {}
+            let _ = app_handle.emit("repo-status-changed", ());
+        }
+    });
+
+    let mut watcher = RecommendedWatcher::new(
+        move |result: notify::Result<notify::Event>| {
+            if let Ok(event) = result {
+                if should_emit_repo_change(&event.kind, &event.paths) {
+                    let _ = tx.send(());
+                }
+            }
+        },
+        NotifyConfig::default(),
+    )
+    .map_err(|e| format!("failed to create repo watcher: {e}"))?;
+    watcher
+        .watch(&repo_path, RecursiveMode::Recursive)
+        .map_err(|e| format!("failed to watch repo: {e}"))?;
+
+    let state = app.state::<AppState>();
+    let mut guard = state
+        .repo_watcher
+        .lock()
+        .map_err(|_| "watcher lock poisoned".to_string())?;
+    *guard = Some(RepoWatcher { _watcher: watcher });
+    Ok(())
+}
 
 fn parse_porcelain_path(rest: &str) -> String {
     let rest = rest.trim_start();
@@ -681,18 +804,11 @@ fn parse_porcelain_path(rest: &str) -> String {
 fn is_submodule_path(repo: &str, rel: &str) -> bool {
     run_git(repo, &["ls-files", "-s", "--", rel])
         .ok()
-        .and_then(|out| {
-            out.lines().next().map(|line| line.starts_with("160000 "))
-        })
+        .and_then(|out| out.lines().next().map(|line| line.starts_with("160000 ")))
         .unwrap_or(false)
 }
 
-fn push_status_entries(
-    out: &mut Vec<FileStatus>,
-    path: String,
-    index: char,
-    worktree: char,
-) {
+fn push_status_entries(out: &mut Vec<FileStatus>, path: String, index: char, worktree: char) {
     let status_label = format!("{index}{worktree}");
     let staged = index != ' ' && index != '?';
     let unstaged = worktree != ' ';
@@ -710,6 +826,75 @@ fn push_status_entries(
             is_staged: false,
         });
     }
+}
+
+fn parse_v2_xy(xy: &str) -> Option<(char, char)> {
+    let mut chars = xy.chars();
+    let index = match chars.next()? {
+        '.' => ' ',
+        ch => ch,
+    };
+    let worktree = match chars.next()? {
+        '.' => ' ',
+        ch => ch,
+    };
+    Some((index, worktree))
+}
+
+fn parse_v2_path_record(record: &str, path_field_index: usize) -> Option<(String, char, char)> {
+    let mut parts = record.splitn(3, ' ');
+    let _kind = parts.next()?;
+    let (index, worktree) = parse_v2_xy(parts.next()?)?;
+    let mut rest = parts.next()?;
+    for _ in 2..path_field_index {
+        let (_, next) = rest.split_once(' ')?;
+        rest = next;
+    }
+    let path = rest;
+    if path.is_empty() {
+        return None;
+    }
+    Some((normalize_path_for_git(path), index, worktree))
+}
+
+fn parse_git_status_porcelain_v2_z(raw: &[u8]) -> Vec<FileStatus> {
+    let mut out = Vec::new();
+    let mut records = raw.split(|b| *b == 0);
+    while let Some(record) = records.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(record);
+        let text = text.trim_end_matches('\n');
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        if let Some(path) = text.strip_prefix("? ") {
+            let path = normalize_path_for_git(path);
+            if !path.is_empty() {
+                push_status_entries(&mut out, path, '?', '?');
+            }
+            continue;
+        }
+        if text.starts_with("! ") {
+            continue;
+        }
+        let parsed = if text.starts_with("1 ") {
+            parse_v2_path_record(text, 8)
+        } else if text.starts_with("2 ") {
+            let parsed = parse_v2_path_record(text, 9);
+            let _orig_path = records.next();
+            parsed
+        } else if text.starts_with("u ") {
+            parse_v2_path_record(text, 10)
+        } else {
+            None
+        };
+        if let Some((path, index, worktree)) = parsed {
+            push_status_entries(&mut out, path, index, worktree);
+        }
+    }
+    out
 }
 
 fn parse_branches(raw: &str) -> Vec<BranchInfo> {
@@ -758,76 +943,66 @@ fn parse_branches(raw: &str) -> Vec<BranchInfo> {
     out
 }
 
-fn parse_git_status_porcelain(raw: &str) -> Vec<FileStatus> {
-    let mut out = Vec::new();
-    for line in raw.lines() {
-        let line = line.trim_end();
-        if line.is_empty() {
-            continue;
-        }
-        let bytes = line.as_bytes();
-        if bytes.len() < 3 {
-            continue;
-        }
-        let index = bytes[0] as char;
-        let worktree = bytes[1] as char;
-        let sep = bytes[2] as char;
-        if sep != ' ' && sep != '\t' {
-            continue;
-        }
-        let rest = line.get(3..).unwrap_or("");
-        let path = parse_porcelain_path(rest);
-        if path.is_empty() {
-            continue;
-        }
-        push_status_entries(&mut out, path, index, worktree);
+fn open_repository_at(app: &tauri::AppHandle, path_str: String) -> Result<String, String> {
+    let root = PathBuf::from(&path_str);
+    if !root.is_dir() {
+        return Err(format!("not a directory: {path_str}"));
     }
-    out
+    if !is_git_dir(&root) {
+        return Err(format!("not a git repository (no .git at): {path_str}"));
+    }
+    {
+        let mut recent = load_recent_repos(app);
+        recent.retain(|r| r != &path_str);
+        recent.insert(0, path_str.clone());
+        recent.truncate(10);
+        save_recent_repos(app, &recent)?;
+
+        let state = app.state::<AppState>();
+        let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
+        *guard = Some(path_str.clone());
+    }
+    save_last_repo(app, &path_str)?;
+    if let Err(err) = start_repo_watcher(app, &path_str) {
+        eprintln!("[gitwave:watcher] {err}");
+    }
+    Ok(path_str)
 }
 
 #[tauri::command]
 async fn open_repository(app: tauri::AppHandle) -> Result<String, String> {
     let (tx, rx) = oneshot::channel();
 
-    app.dialog()
-        .file()
-        .pick_folder(move |file_path| {
-            let _ = tx.send(file_path);
-        });
+    app.dialog().file().pick_folder(move |file_path| {
+        let _ = tx.send(file_path);
+    });
 
     let picked = rx
         .await
         .map_err(|_| "dialog cancelled".to_string())?
         .ok_or_else(|| "dialog cancelled".to_string())?;
 
-    let path_str = file_path_to_string(picked);
-    let root = PathBuf::from(&path_str);
-    if !is_git_dir(&root) {
-        return Err(format!(
-            "not a git repository (no .git at): {}",
-            path_str
-        ));
-    }
-    {
-        let mut recent = load_recent_repos(&app);
-        recent.retain(|r| r != &path_str);
-        recent.insert(0, path_str.clone());
-        recent.truncate(10);
-        save_recent_repos(&app, &recent)?;
-
-        let state = app.state::<AppState>();
-        let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
-        *guard = Some(path_str.clone());
-    }
-    save_last_repo(&app, &path_str)?;
-    Ok(path_str)
+    open_repository_at(&app, file_path_to_string(picked))
 }
 
 #[tauri::command]
-fn get_repo_path(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Option<String>, String> {
+fn open_repository_at_path(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    open_repository_at(&app, path)
+}
+
+#[tauri::command]
+fn get_repo_path(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
     let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
     if guard.is_none() {
         *guard = load_last_repo(&app);
+        if let Some(path) = guard.as_deref() {
+            if let Err(err) = start_repo_watcher(&app, path) {
+                eprintln!("[gitwave:watcher] {err}");
+            }
+        }
     }
     Ok(guard.clone())
 }
@@ -884,18 +1059,30 @@ fn switch_repository(app: tauri::AppHandle, path: String) -> Result<String, Stri
         *guard = Some(path.clone());
     }
     save_last_repo(&app, &path)?;
+    if let Err(err) = start_repo_watcher(&app, &path) {
+        eprintln!("[gitwave:watcher] {err}");
+    }
     Ok(path)
 }
 
 #[tauri::command]
-fn get_git_status(state: State<'_, AppState>) -> Result<Vec<FileStatus>, String> {
+async fn get_git_status(state: State<'_, AppState>) -> Result<Vec<FileStatus>, String> {
     let repo = require_repo(&state)?;
-    let raw = run_git_with_config(
-        &repo,
-        &[("core.quotepath", "false")],
-        &["status", "--porcelain"],
-    )?;
-    Ok(parse_git_status_porcelain(&raw))
+    let gate = Arc::clone(&state.git_gate);
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|_| "git task gate closed".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let raw = run_git_bytes_with_config(
+            &repo,
+            &[("core.quotepath", "false")],
+            &["status", "--porcelain=v2", "-z", "--branch"],
+        )?;
+        Ok(parse_git_status_porcelain_v2_z(&raw))
+    })
+    .await
+    .map_err(|e| format!("status task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -947,7 +1134,14 @@ fn revert_file(state: State<'_, AppState>, path: String, is_staged: bool) -> Res
     if is_staged {
         run_git(
             &repo,
-            &["restore", "--source=HEAD", "--staged", "--worktree", "--", &p],
+            &[
+                "restore",
+                "--source=HEAD",
+                "--staged",
+                "--worktree",
+                "--",
+                &p,
+            ],
         )?;
     } else {
         run_git(&repo, &["restore", "--worktree", "--", &p])?;
@@ -1002,7 +1196,11 @@ fn amend_last_commit(state: State<'_, AppState>, message: String) -> Result<(), 
 fn soft_reset_last_commit(state: State<'_, AppState>) -> Result<String, String> {
     let repo = require_repo(&state)?;
     let output = run_git(&repo, &["reset", "--soft", "HEAD~1"])?;
-    Ok(if output.is_empty() { "ok".to_string() } else { output })
+    Ok(if output.is_empty() {
+        "ok".to_string()
+    } else {
+        output
+    })
 }
 
 /// 是否在索引中（未跟踪文件 `git diff -- path` 恒为空，需走 `--no-index`）。
@@ -1016,24 +1214,19 @@ const GIT_NULL_PATH: &str = "/dev/null";
 #[cfg(windows)]
 const GIT_NULL_PATH: &str = "NUL";
 
-#[tauri::command]
-fn get_file_diff(state: State<'_, AppState>, path: String, is_staged: bool) -> Result<String, String> {
-    let repo = require_repo(&state)?;
+fn file_diff_for_repo(repo: &str, path: &str, is_staged: bool) -> Result<String, String> {
     let p = normalize_path_for_git(&path);
     ensure_safe_repo_relative_path(&p)?;
     let raw = if is_staged {
-        run_git(&repo, &["diff", "--cached", "--", &p])?
+        run_git(repo, &["diff", "--cached", "--", &p])?
     } else {
-        let diff = run_git(&repo, &["diff", "--", &p])?;
+        let diff = run_git(repo, &["diff", "--", &p])?;
         if !diff.is_empty() {
             diff
-        } else if !is_tracked_in_index(&repo, &p)? {
-            let worktree = Path::new(&repo).join(&p);
+        } else if !is_tracked_in_index(repo, &p)? {
+            let worktree = Path::new(repo).join(&p);
             if worktree.is_file() {
-                run_git_diff(
-                    &repo,
-                    &["diff", "--no-index", "--", GIT_NULL_PATH, &p],
-                )?
+                run_git_diff(repo, &["diff", "--no-index", "--", GIT_NULL_PATH, &p])?
             } else {
                 diff
             }
@@ -1045,13 +1238,28 @@ fn get_file_diff(state: State<'_, AppState>, path: String, is_staged: bool) -> R
 }
 
 #[tauri::command]
-fn get_git_log(
+async fn get_file_diff(
     state: State<'_, AppState>,
+    path: String,
+    is_staged: bool,
+) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let gate = Arc::clone(&state.git_gate);
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|_| "git task gate closed".to_string())?;
+    tokio::task::spawn_blocking(move || file_diff_for_repo(&repo, &path, is_staged))
+        .await
+        .map_err(|e| format!("diff task failed: {e}"))?
+}
+
+fn git_log_for_repo(
+    repo: &str,
     all: Option<bool>,
     skip: Option<usize>,
     limit: Option<usize>,
 ) -> Result<CommitLogPage, String> {
-    let repo = require_repo(&state)?;
     let skip = skip.unwrap_or(0);
     let limit = limit.unwrap_or(50).max(1);
     let fetch = limit.saturating_add(1);
@@ -1063,7 +1271,7 @@ fn get_git_log(
     if all.unwrap_or(false) {
         args.push("--all");
     }
-    let raw = run_git(&repo, &args)?;
+    let raw = run_git(repo, &args)?;
     let mut logs = Vec::new();
     for line in raw.split('\n') {
         if line.is_empty() {
@@ -1093,6 +1301,24 @@ fn get_git_log(
         commits: logs,
         has_more,
     })
+}
+
+#[tauri::command]
+async fn get_git_log(
+    state: State<'_, AppState>,
+    all: Option<bool>,
+    skip: Option<usize>,
+    limit: Option<usize>,
+) -> Result<CommitLogPage, String> {
+    let repo = require_repo(&state)?;
+    let gate = Arc::clone(&state.git_gate);
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|_| "git task gate closed".to_string())?;
+    tokio::task::spawn_blocking(move || git_log_for_repo(&repo, all, skip, limit))
+        .await
+        .map_err(|e| format!("log task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -1145,10 +1371,15 @@ fn get_commit_diff(state: State<'_, AppState>, hash: String) -> Result<String, S
 pub struct AheadBehind {
     pub ahead: usize,
     pub behind: usize,
+    pub unpushed_hashes: Vec<String>,
 }
 
 #[tauri::command]
-fn rename_branch(state: State<'_, AppState>, old_name: String, new_name: String) -> Result<String, String> {
+fn rename_branch(
+    state: State<'_, AppState>,
+    old_name: String,
+    new_name: String,
+) -> Result<String, String> {
     let repo = require_repo(&state)?;
     run_git(&repo, &["branch", "-m", &old_name, &new_name])
 }
@@ -1176,7 +1407,11 @@ fn create_branch(state: State<'_, AppState>, name: String) -> Result<String, Str
 }
 
 #[tauri::command]
-fn create_branch_at(state: State<'_, AppState>, name: String, hash: String) -> Result<String, String> {
+fn create_branch_at(
+    state: State<'_, AppState>,
+    name: String,
+    hash: String,
+) -> Result<String, String> {
     let repo = require_repo(&state)?;
     run_git(&repo, &["branch", &name, &hash])
 }
@@ -1232,13 +1467,17 @@ fn mark_file_resolved(state: State<'_, AppState>, path: String) -> Result<String
 fn read_working_file(state: State<'_, AppState>, path: String) -> Result<String, String> {
     let repo = require_repo(&state)?;
     let p = normalize_path_for_git(&path);
-    let bytes = read_worktree_file_bytes(&repo, &p)?
-        .ok_or_else(|| "file does not exist".to_string())?;
+    let bytes =
+        read_worktree_file_bytes(&repo, &p)?.ok_or_else(|| "file does not exist".to_string())?;
     String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8".to_string())
 }
 
 #[tauri::command]
-fn write_working_file(state: State<'_, AppState>, path: String, content: String) -> Result<String, String> {
+fn write_working_file(
+    state: State<'_, AppState>,
+    path: String,
+    content: String,
+) -> Result<String, String> {
     let repo = require_repo(&state)?;
     let p = normalize_path_for_git(&path);
     let file = worktree_file_path(&repo, &p)?;
@@ -1291,6 +1530,11 @@ fn checkout_with_mode(
 #[tauri::command]
 async fn git_fetch(state: State<'_, AppState>) -> Result<String, String> {
     let repo = require_repo(&state)?;
+    let gate = Arc::clone(&state.git_gate);
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|_| "git task gate closed".to_string())?;
     let result = tokio::task::spawn_blocking(move || run_git(&repo, &["fetch"]))
         .await
         .map_err(|e| format!("task failed: {e}"))?;
@@ -1306,7 +1550,9 @@ fn stage_patch(state: State<'_, AppState>, patch: String) -> Result<String, Stri
 /// 从 unified diff 中解析 `+++ b/<path>` 路径（含 quotepath 引号路径）。
 fn patch_target_path(patch: &str) -> Option<String> {
     for line in patch.lines() {
-        let Some(rest) = line.strip_prefix("+++ ") else { continue };
+        let Some(rest) = line.strip_prefix("+++ ") else {
+            continue;
+        };
         let path = rest.trim();
         if path == "/dev/null" || path == "NUL" {
             continue;
@@ -1337,13 +1583,21 @@ fn repo_diff_for_hunk(repo: &str, path: &str, is_staged: bool) -> Result<String,
 }
 
 /// 指定 @@ 头是否仍存在于 diff 中（精确匹配，避免误判相邻 hunk）。
-fn hunk_still_in_diff(repo: &str, path: &str, is_staged: bool, header: &str) -> Result<bool, String> {
+fn hunk_still_in_diff(
+    repo: &str,
+    path: &str,
+    is_staged: bool,
+    header: &str,
+) -> Result<bool, String> {
     let diff = repo_diff_for_hunk(repo, path, is_staged)?;
     Ok(diff.lines().any(|line| line == header))
 }
 
 fn patch_hunk_header(patch: &str) -> Option<String> {
-    patch.lines().find(|l| l.starts_with("@@ ")).map(str::to_string)
+    patch
+        .lines()
+        .find(|l| l.starts_with("@@ "))
+        .map(str::to_string)
 }
 
 /// 从完整 diff 文本中按 @@ 头取出单个 hunk（含 @@ 行）。
@@ -1424,19 +1678,19 @@ fn build_apply_args(is_staged: bool, three_way: bool) -> Vec<String> {
         args.push("--3way".to_string());
     }
     args.extend(
-        [
-            "--whitespace=nowarn",
-            "--recount",
-            "--inaccurate-eof",
-            "-",
-        ]
-        .iter()
-        .map(|s| s.to_string()),
+        ["--whitespace=nowarn", "--recount", "--inaccurate-eof", "-"]
+            .iter()
+            .map(|s| s.to_string()),
     );
     args
 }
 
-fn try_apply_patch(repo: &str, patch: &[u8], is_staged: bool, three_way: bool) -> Result<(), String> {
+fn try_apply_patch(
+    repo: &str,
+    patch: &[u8],
+    is_staged: bool,
+    three_way: bool,
+) -> Result<(), String> {
     let args = build_apply_args(is_staged, three_way);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     run_git_with_stdin(repo, &arg_refs, patch).map(|_| ())
@@ -1451,7 +1705,8 @@ fn refresh_patch_from_repo(
 ) -> Result<Vec<u8>, String> {
     let p = normalize_path_for_git(path);
     let diff = repo_diff_for_hunk(repo, &p, is_staged)?;
-    let prefix = diff_file_prefix(&diff).ok_or_else(|| "hunk not found in fresh diff".to_string())?;
+    let prefix =
+        diff_file_prefix(&diff).ok_or_else(|| "hunk not found in fresh diff".to_string())?;
     let hunk = extract_hunk_from_diff(&diff, header)
         .ok_or_else(|| "hunk not found in fresh diff".to_string())?;
     let mut patch = format!("{prefix}\n{hunk}").into_bytes();
@@ -1480,9 +1735,14 @@ fn try_revert_hunk(
 
 /// 反向应用 patch 以丢弃变更：`is_staged` 为 true 时作用于索引，否则作用于工作区。
 #[tauri::command]
-fn revert_patch(state: State<'_, AppState>, patch: String, is_staged: bool) -> Result<String, String> {
+fn revert_patch(
+    state: State<'_, AppState>,
+    patch: String,
+    is_staged: bool,
+) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    let header = patch_hunk_header(&patch).ok_or_else(|| "patch has no @@ hunk header".to_string())?;
+    let header =
+        patch_hunk_header(&patch).ok_or_else(|| "patch has no @@ hunk header".to_string())?;
     let path = patch_target_path(&patch).ok_or_else(|| "patch has no file path".to_string())?;
 
     let mut input = patch.into_bytes();
@@ -1520,13 +1780,37 @@ fn revert_patch(state: State<'_, AppState>, patch: String, is_staged: bool) -> R
     })
 }
 
-fn parse_ahead_behind(repo: &str, range: &str) -> Result<AheadBehind, String> {
+fn parse_ahead_behind(repo: &str, range: &str) -> Result<(usize, usize), String> {
     let output = run_git(repo, &["rev-list", "--count", "--left-right", range])?;
     let trimmed = output.trim();
     let parts: Vec<&str> = trimmed.split('\t').collect();
     let behind = parts.first().unwrap_or(&"0").parse().unwrap_or(0);
     let ahead = parts.get(1).copied().unwrap_or("0").parse().unwrap_or(0);
-    Ok(AheadBehind { ahead, behind })
+    Ok((ahead, behind))
+}
+
+fn compare_ref_for_branch(repo: &str, branch: &str) -> Result<String, String> {
+    match run_git(
+        repo,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    ) {
+        Ok(upstream) => Ok(upstream.trim().to_string()),
+        Err(_) => ahead_behind_compare_ref(repo, branch),
+    }
+}
+
+fn list_unpushed_hashes(repo: &str, compare: &str) -> Result<Vec<String>, String> {
+    let output = run_git(repo, &["rev-list", &format!("{compare}..HEAD")])?;
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// 无本地 upstream 时，用 push 会用的 remote 分支作对比基准。
@@ -1559,19 +1843,14 @@ fn default_remote_branch(repo: &str, remote: &str) -> Result<String, String> {
 }
 
 fn ahead_behind_for_branch(repo: &str, branch: &str) -> Result<AheadBehind, String> {
-    let compare = match run_git(
-        repo,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-    ) {
-        Ok(upstream) => upstream.trim().to_string(),
-        Err(_) => ahead_behind_compare_ref(repo, branch)?,
-    };
-    parse_ahead_behind(repo, &format!("{compare}...HEAD"))
+    let compare = compare_ref_for_branch(repo, branch)?;
+    let (ahead, behind) = parse_ahead_behind(repo, &format!("{compare}...HEAD"))?;
+    let unpushed_hashes = list_unpushed_hashes(repo, &compare)?;
+    Ok(AheadBehind {
+        ahead,
+        behind,
+        unpushed_hashes,
+    })
 }
 
 #[tauri::command]
@@ -1580,7 +1859,11 @@ fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
     let branch = run_git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = branch.trim().to_string();
     if branch == "HEAD" {
-        return Ok(AheadBehind { ahead: 0, behind: 0 });
+        return Ok(AheadBehind {
+            ahead: 0,
+            behind: 0,
+            unpushed_hashes: vec![],
+        });
     }
     ahead_behind_for_branch(&repo, &branch)
 }
@@ -1635,15 +1918,17 @@ fn git_push_repo(repo: &str) -> Result<String, String> {
         return Err("当前为 detached HEAD，无法 push".into());
     }
     let remote = resolve_push_remote(repo, &branch)?;
-    run_git(
-        repo,
-        &["push", "--set-upstream", &remote, &branch],
-    )
+    run_git(repo, &["push", "--set-upstream", &remote, &branch])
 }
 
 #[tauri::command]
 async fn git_push(state: State<'_, AppState>) -> Result<String, String> {
     let repo = require_repo(&state)?;
+    let gate = Arc::clone(&state.git_gate);
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|_| "git task gate closed".to_string())?;
     let result = tokio::task::spawn_blocking(move || git_push_repo(&repo))
         .await
         .map_err(|e| format!("task failed: {e}"))?;
@@ -1653,6 +1938,11 @@ async fn git_push(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn git_pull(state: State<'_, AppState>) -> Result<String, String> {
     let repo = require_repo(&state)?;
+    let gate = Arc::clone(&state.git_gate);
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|_| "git task gate closed".to_string())?;
     let result = tokio::task::spawn_blocking(move || run_git(&repo, &["pull"]))
         .await
         .map_err(|e| format!("task failed: {e}"))?;
@@ -1765,7 +2055,13 @@ fn get_subtrees(state: State<'_, AppState>) -> Result<Vec<SubtreeInfo>, String> 
     Ok(out)
 }
 
-fn run_subtree(repo: &str, action: &str, prefix: &str, remote: &str, branch: &str) -> Result<String, String> {
+fn run_subtree(
+    repo: &str,
+    action: &str,
+    prefix: &str,
+    remote: &str,
+    branch: &str,
+) -> Result<String, String> {
     let prefix = normalize_subtree_prefix(prefix);
     if prefix.is_empty() {
         return Err("subtree prefix 不能为空".into());
@@ -1779,10 +2075,7 @@ fn run_subtree(repo: &str, action: &str, prefix: &str, remote: &str, branch: &st
         return Err("branch 不能为空".into());
     }
     let prefix_flag = format!("--prefix={prefix}");
-    run_git(
-        repo,
-        &["subtree", action, &prefix_flag, remote, branch],
-    )
+    run_git(repo, &["subtree", action, &prefix_flag, remote, branch])
 }
 
 #[tauri::command]
@@ -1793,11 +2086,10 @@ async fn subtree_pull(
     branch: String,
 ) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    let result = tokio::task::spawn_blocking(move || {
-        run_subtree(&repo, "pull", &prefix, &remote, &branch)
-    })
-    .await
-    .map_err(|e| format!("task failed: {e}"))?;
+    let result =
+        tokio::task::spawn_blocking(move || run_subtree(&repo, "pull", &prefix, &remote, &branch))
+            .await
+            .map_err(|e| format!("task failed: {e}"))?;
     result.map(|s| if s.is_empty() { "ok".into() } else { s })
 }
 
@@ -1809,11 +2101,10 @@ async fn subtree_push(
     branch: String,
 ) -> Result<String, String> {
     let repo = require_repo(&state)?;
-    let result = tokio::task::spawn_blocking(move || {
-        run_subtree(&repo, "push", &prefix, &remote, &branch)
-    })
-    .await
-    .map_err(|e| format!("task failed: {e}"))?;
+    let result =
+        tokio::task::spawn_blocking(move || run_subtree(&repo, "push", &prefix, &remote, &branch))
+            .await
+            .map_err(|e| format!("task failed: {e}"))?;
     result.map(|s| if s.is_empty() { "ok".into() } else { s })
 }
 
@@ -1900,7 +2191,11 @@ async fn update_submodule(state: State<'_, AppState>, path: String) -> Result<St
 // === Tags ===
 
 #[tauri::command]
-fn create_tag(state: State<'_, AppState>, name: String, message: Option<String>) -> Result<String, String> {
+fn create_tag(
+    state: State<'_, AppState>,
+    name: String,
+    message: Option<String>,
+) -> Result<String, String> {
     let repo = require_repo(&state)?;
     let mut args = vec!["tag"];
     if let Some(msg) = &message {
@@ -1922,13 +2217,21 @@ fn create_tag(state: State<'_, AppState>, name: String, message: Option<String>)
 fn get_tags(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let repo = require_repo(&state)?;
     let raw = run_git(&repo, &["tag", "--sort=-creatordate"])?;
-    Ok(raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    Ok(raw
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 // === Stash ===
 
 #[tauri::command]
-fn stash_save(state: State<'_, AppState>, message: Option<String>, include_untracked: bool) -> Result<String, String> {
+fn stash_save(
+    state: State<'_, AppState>,
+    message: Option<String>,
+    include_untracked: bool,
+) -> Result<String, String> {
     let repo = require_repo(&state)?;
     let mut args = vec!["stash", "push"];
     if include_untracked {
@@ -1950,16 +2253,27 @@ fn stash_list(state: State<'_, AppState>) -> Result<Vec<StashEntry>, String> {
     let mut entries = Vec::new();
     for line in raw.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         // stash@{0}: On branch-name: message
         let index = entries.len();
         let rest = trimmed.split_once(": ").map(|(_, r)| r).unwrap_or(trimmed);
-        let branch = rest.split_once(": ").map(|(_, _r)| {
-            // Try to extract branch name from "On branch-name: message"
-            let branch_part = rest.strip_prefix("On ").and_then(|s| s.split_once(": ")).map(|(b, _)| b.to_string());
-            let msg = rest.split_once(": ").map(|(_, m)| m.to_string()).unwrap_or_default();
-            (branch_part.unwrap_or_default(), msg)
-        }).unwrap_or((String::new(), rest.to_string()));
+        let branch = rest
+            .split_once(": ")
+            .map(|(_, _r)| {
+                // Try to extract branch name from "On branch-name: message"
+                let branch_part = rest
+                    .strip_prefix("On ")
+                    .and_then(|s| s.split_once(": "))
+                    .map(|(b, _)| b.to_string());
+                let msg = rest
+                    .split_once(": ")
+                    .map(|(_, m)| m.to_string())
+                    .unwrap_or_default();
+                (branch_part.unwrap_or_default(), msg)
+            })
+            .unwrap_or((String::new(), rest.to_string()));
         entries.push(StashEntry {
             index,
             message: branch.1,
@@ -2140,10 +2454,7 @@ fn parse_staged_files(repo: &str) -> Result<Vec<StagedFileInfo>, String> {
         if path.is_empty() {
             continue;
         }
-        let (additions, deletions, is_binary) = stats
-            .get(&path)
-            .copied()
-            .unwrap_or((0, 0, false));
+        let (additions, deletions, is_binary) = stats.get(&path).copied().unwrap_or((0, 0, false));
         files.push(StagedFileInfo {
             path,
             status,
@@ -2178,7 +2489,9 @@ fn extract_lock_hint(repo: &str, path: &str) -> Option<String> {
             continue;
         }
         let content = &line[1..];
-        for segment in content.split(|c: char| !c.is_alphanumeric() && c != '@' && c != '/' && c != '-' && c != '_' && c != '.') {
+        for segment in content.split(|c: char| {
+            !c.is_alphanumeric() && c != '@' && c != '/' && c != '-' && c != '_' && c != '.'
+        }) {
             let s = segment.trim();
             if s.len() < 2 || s.len() > 80 {
                 continue;
@@ -2210,7 +2523,10 @@ fn extract_lock_hint(repo: &str, path: &str) -> Option<String> {
     if packages.is_empty() {
         None
     } else {
-        Some(format!("changed packages (sample): {}", packages.join(", ")))
+        Some(format!(
+            "changed packages (sample): {}",
+            packages.join(", ")
+        ))
     }
 }
 
@@ -2362,7 +2678,8 @@ fn build_ai_staged_diff_context(repo: &str) -> Result<AiStagedDiffContext, Strin
         });
     }
 
-    let mut prompt_body = format!("## Current Branch\n{current_branch}\n\n## Change Summary\n{summary}");
+    let mut prompt_body =
+        format!("## Current Branch\n{current_branch}\n\n## Change Summary\n{summary}");
     if !omitted_files.is_empty() {
         prompt_body.push_str("\n## Omitted Files (metadata only, no full diff)\n");
         for o in &omitted_files {
@@ -2618,7 +2935,11 @@ fn get_git_config(state: State<'_, AppState>) -> Result<GitConfig, String> {
 }
 
 #[tauri::command]
-fn set_git_config(state: State<'_, AppState>, user_name: String, user_email: String) -> Result<(), String> {
+fn set_git_config(
+    state: State<'_, AppState>,
+    user_name: String,
+    user_email: String,
+) -> Result<(), String> {
     let repo = require_repo(&state)?;
     if !user_name.is_empty() {
         run_git(&repo, &["config", "user.name", &user_name])?;
@@ -2635,8 +2956,7 @@ fn load_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
     if !path.exists() {
         return Ok(AppSettings::default());
     }
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read settings: {e}"))?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("failed to read settings: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("failed to parse settings: {e}"))
 }
 
@@ -2657,9 +2977,12 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .manage(AppState {
             repo_path: Mutex::new(None),
+            repo_watcher: Mutex::new(None),
+            git_gate: Arc::new(Semaphore::new(1)),
         })
         .invoke_handler(tauri::generate_handler![
             open_repository,
+            open_repository_at_path,
             get_repo_path,
             get_recent_repos,
             switch_repository,
@@ -2730,6 +3053,29 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_git_status_porcelain_v2_z_reads_changed_untracked_and_renamed() {
+        let raw = b"# branch.head main\0\
+1 .M N... 100644 100644 100644 abc abc src/main.rs\0\
+1 M. N... 100644 100644 100644 abc def src/lib with space.rs\0\
+2 R. N... 100644 100644 100644 abc def R100 src/new.rs\0src/old.rs\0\
+? notes/new file.md\0";
+        let items = parse_git_status_porcelain_v2_z(raw);
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| (item.path.as_str(), item.status.as_str(), item.is_staged))
+                .collect::<Vec<_>>(),
+            vec![
+                ("src/main.rs", " M", false),
+                ("src/lib with space.rs", "M ", true),
+                ("src/new.rs", "R ", true),
+                ("notes/new file.md", "??", false),
+            ]
+        );
+    }
 
     #[test]
     fn parse_submodule_status_line_reads_clean_submodule() {
