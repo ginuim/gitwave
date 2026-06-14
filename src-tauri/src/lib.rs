@@ -1,15 +1,13 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::{oneshot, Semaphore};
 
@@ -144,12 +142,7 @@ pub struct SubmoduleInfo {
 
 pub struct AppState {
     repo_path: Mutex<Option<String>>,
-    repo_watcher: Mutex<Option<RepoWatcher>>,
     git_gate: Arc<Semaphore>,
-}
-
-struct RepoWatcher {
-    _watcher: RecommendedWatcher,
 }
 
 fn file_path_to_string(fp: tauri_plugin_dialog::FilePath) -> String {
@@ -743,54 +736,6 @@ fn save_pinned_branches(app: &tauri::AppHandle, branches: &[String]) -> Result<(
     Ok(())
 }
 
-fn should_emit_repo_change(kind: &EventKind, paths: &[PathBuf]) -> bool {
-    if matches!(kind, EventKind::Access(_)) {
-        return false;
-    }
-    paths.iter().any(|path| {
-        let path_text = path.to_string_lossy();
-        !(path_text.contains("/target/")
-            || path_text.contains("\\target\\")
-            || path_text.contains("/node_modules/")
-            || path_text.contains("\\node_modules\\"))
-    })
-}
-
-fn start_repo_watcher(app: &tauri::AppHandle, repo: &str) -> Result<(), String> {
-    let repo_path = PathBuf::from(repo);
-    let app_handle = app.clone();
-    let (tx, rx) = mpsc::channel::<()>();
-    thread::spawn(move || {
-        while rx.recv().is_ok() {
-            while rx.recv_timeout(Duration::from_millis(350)).is_ok() {}
-            let _ = app_handle.emit("repo-status-changed", ());
-        }
-    });
-
-    let mut watcher = RecommendedWatcher::new(
-        move |result: notify::Result<notify::Event>| {
-            if let Ok(event) = result {
-                if should_emit_repo_change(&event.kind, &event.paths) {
-                    let _ = tx.send(());
-                }
-            }
-        },
-        NotifyConfig::default(),
-    )
-    .map_err(|e| format!("failed to create repo watcher: {e}"))?;
-    watcher
-        .watch(&repo_path, RecursiveMode::Recursive)
-        .map_err(|e| format!("failed to watch repo: {e}"))?;
-
-    let state = app.state::<AppState>();
-    let mut guard = state
-        .repo_watcher
-        .lock()
-        .map_err(|_| "watcher lock poisoned".to_string())?;
-    *guard = Some(RepoWatcher { _watcher: watcher });
-    Ok(())
-}
-
 fn parse_porcelain_path(rest: &str) -> String {
     let rest = rest.trim_start();
     let path = if let Some(pos) = rest.rfind(" -> ") {
@@ -963,9 +908,6 @@ fn open_repository_at(app: &tauri::AppHandle, path_str: String) -> Result<String
         *guard = Some(path_str.clone());
     }
     save_last_repo(app, &path_str)?;
-    if let Err(err) = start_repo_watcher(app, &path_str) {
-        eprintln!("[gitwave:watcher] {err}");
-    }
     Ok(path_str)
 }
 
@@ -998,11 +940,6 @@ fn get_repo_path(
     let mut guard = state.repo_path.lock().map_err(|_| "state lock poisoned")?;
     if guard.is_none() {
         *guard = load_last_repo(&app);
-        if let Some(path) = guard.as_deref() {
-            if let Err(err) = start_repo_watcher(&app, path) {
-                eprintln!("[gitwave:watcher] {err}");
-            }
-        }
     }
     Ok(guard.clone())
 }
@@ -1059,9 +996,6 @@ fn switch_repository(app: tauri::AppHandle, path: String) -> Result<String, Stri
         *guard = Some(path.clone());
     }
     save_last_repo(&app, &path)?;
-    if let Err(err) = start_repo_watcher(&app, &path) {
-        eprintln!("[gitwave:watcher] {err}");
-    }
     Ok(path)
 }
 
@@ -2977,7 +2911,6 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .manage(AppState {
             repo_path: Mutex::new(None),
-            repo_watcher: Mutex::new(None),
             git_gate: Arc::new(Semaphore::new(1)),
         })
         .invoke_handler(tauri::generate_handler![

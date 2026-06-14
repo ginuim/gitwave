@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { Splitpanes, Pane } from 'splitpanes'
 import 'splitpanes/dist/splitpanes.css'
@@ -166,40 +165,17 @@ async function openRepoFromDrop(paths: string[]) {
 }
 
 let debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null
-let refreshInFlight = false
-let refreshQueued = false
 let statusRequestSeq = 0
 let historyRequestSeq = 0
-let unlistenRepoChanged: UnlistenFn | null = null
 
-function requestRepoRefresh(opts?: { immediate?: boolean }) {
+function refreshWorkspaceIfVisible() {
   if (!repoPath.value) return
   if (document.visibilityState === 'hidden') return
   if (debouncedRefreshTimer) clearTimeout(debouncedRefreshTimer)
   debouncedRefreshTimer = setTimeout(() => {
     debouncedRefreshTimer = null
-    void drainRepoRefreshQueue()
-  }, opts?.immediate ? 0 : 400)
-}
-
-function refreshWorkspaceIfVisible() {
-  requestRepoRefresh()
-}
-
-async function drainRepoRefreshQueue() {
-  if (refreshInFlight) {
-    refreshQueued = true
-    return
-  }
-  refreshInFlight = true
-  try {
-    do {
-      refreshQueued = false
-      await syncRefresh({ silentStatus: true })
-    } while (refreshQueued)
-  } finally {
-    refreshInFlight = false
-  }
+    void syncRefresh({ silentStatus: true })
+  }, 400)
 }
 
 // Get repo path on mount
@@ -235,19 +211,12 @@ onMounted(async () => {
 
   window.addEventListener('focus', refreshWorkspaceIfVisible)
   document.addEventListener('visibilitychange', refreshWorkspaceIfVisible)
-  try {
-    unlistenRepoChanged = await listen('repo-status-changed', () => requestRepoRefresh())
-  } catch (_) {
-    // ignore when not running inside Tauri
-  }
 })
 
 onUnmounted(() => {
   if (debouncedRefreshTimer) clearTimeout(debouncedRefreshTimer)
   unlistenDragDrop?.()
   unlistenDragDrop = null
-  unlistenRepoChanged?.()
-  unlistenRepoChanged = null
   window.removeEventListener('focus', refreshWorkspaceIfVisible)
   document.removeEventListener('visibilitychange', refreshWorkspaceIfVisible)
 })
