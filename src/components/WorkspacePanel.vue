@@ -493,6 +493,10 @@ function onFileClick(file: FileStatus, sectionFiles: FileStatus[], e: MouseEvent
   })
 }
 
+function onFileMouseDown(e: MouseEvent) {
+  if (e.shiftKey || e.metaKey || e.ctrlKey) e.preventDefault()
+}
+
 async function showInFolder(relPath: string, e: Event) {
   e.stopPropagation()
   if (!props.repoPath) { emit('revealError', '未打开仓库'); return }
@@ -584,8 +588,9 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
         <div
           v-for="file in visibleUnstaged.items"
           :key="file.path"
-          class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
+          class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group select-none"
           :class="{ 'bg-green-900/20': selectedFileSet.has(file.path) }"
+          @mousedown="onFileMouseDown"
           @click="onFileClick(file, unstagedFiles, $event)"
         >
           <button
@@ -679,8 +684,9 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
         <div
           v-for="file in visibleStaged.items"
           :key="file.path"
-          class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
+          class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group select-none"
           :class="{ 'bg-red-900/20': selectedFileSet.has(file.path) }"
+          @mousedown="onFileMouseDown"
           @click="onFileClick(file, stagedFiles, $event)"
         >
           <button
