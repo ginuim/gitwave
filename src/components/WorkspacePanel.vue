@@ -13,6 +13,7 @@ import { buildCommitPayload, canSubmitCommit, commitSubmitLabel } from '../utils
 const props = defineProps<{
   statuses: FileStatus[]
   selectedFile: string | null
+  selectedFiles: string[]
   commitLoading: boolean
   /** 父组件在提交成功后递增，用于显示「已提交」短提示 */
   commitSuccessTick: number
@@ -24,11 +25,11 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  stageFile: [path: string]
-  unstageFile: [path: string]
-  revertFile: [path: string, isStaged: boolean]
-  deleteFile: [path: string, isStaged: boolean]
-  selectFile: [path: string, isStaged: boolean]
+  stageFile: [paths: string[]]
+  unstageFile: [paths: string[]]
+  revertFile: [paths: string[], isStaged: boolean]
+  deleteFile: [paths: string[], isStaged: boolean]
+  selectFile: [path: string, isStaged: boolean, modifiers: { shiftKey: boolean; toggleKey: boolean; sectionPaths: string[] }]
   commit: [payload: CommitPayload]
   softResetLastCommit: []
   revealError: [message: string]
@@ -468,21 +469,29 @@ async function streamAnthropic(provider: ProviderConfig, model: string, prompt: 
 const unstagedFiles = computed(() => props.statuses.filter((f) => !f.isStaged))
 const stagedFiles = computed(() => props.statuses.filter((f) => f.isStaged))
 const conflictedFileSet = computed(() => new Set(props.conflictedFiles ?? []))
+const selectedFileSet = computed(() => new Set(props.selectedFiles))
 
-const selectedInUnstaged = computed(
-  () =>
-  !!props.selectedFile &&
-  unstagedFiles.value.some((f) => f.path === props.selectedFile),
+const selectedUnstagedPaths = computed(() =>
+  unstagedFiles.value.map((f) => f.path).filter((path) => selectedFileSet.value.has(path)),
 )
-const selectedInStaged = computed(
-  () =>
-  !!props.selectedFile &&
-  stagedFiles.value.some((f) => f.path === props.selectedFile),
+const selectedStagedPaths = computed(() =>
+  stagedFiles.value.map((f) => f.path).filter((path) => selectedFileSet.value.has(path)),
 )
 
-const selectedIsUntracked = computed(
-  () => props.selectedFile != null && isUntrackedPath(props.selectedFile, props.statuses),
+const selectedInUnstaged = computed(() => selectedUnstagedPaths.value.length > 0)
+const selectedInStaged = computed(() => selectedStagedPaths.value.length > 0)
+
+const selectedUnstagedHasTracked = computed(() =>
+  selectedUnstagedPaths.value.some((path) => !isUntrackedPath(path, props.statuses)),
 )
+
+function onFileClick(file: FileStatus, sectionFiles: FileStatus[], e: MouseEvent) {
+  emit('selectFile', file.path, file.isStaged, {
+    shiftKey: e.shiftKey,
+    toggleKey: e.metaKey || e.ctrlKey,
+    sectionPaths: sectionFiles.map((item) => item.path),
+  })
+}
 
 async function showInFolder(relPath: string, e: Event) {
   e.stopPropagation()
@@ -529,10 +538,10 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
         <span class="flex-shrink-0 whitespace-nowrap">Unstaged ({{ unstagedFiles.length }})</span>
         <div class="flex items-center gap-1 flex-nowrap flex-shrink-0 overflow-x-auto">
           <button
-            v-if="!selectedIsUntracked"
+            v-if="selectedUnstagedHasTracked"
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInUnstaged"
-            @click="emit('revertFile', props.selectedFile!, false)"
+            @click="emit('revertFile', selectedUnstagedPaths, false)"
           >
             <Undo2 :size="12" />
             <span>Revert</span>
@@ -540,7 +549,7 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInUnstaged"
-            @click="emit('deleteFile', props.selectedFile!, false)"
+            @click="emit('deleteFile', selectedUnstagedPaths, false)"
           >
             <Trash2 :size="12" />
             <span>Delete</span>
@@ -548,7 +557,7 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInUnstaged"
-            @click="emit('stageFile', props.selectedFile!)"
+            @click="emit('stageFile', selectedUnstagedPaths)"
           >
             <FilePlus :size="12" />
             <span>Stage</span>
@@ -556,7 +565,7 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           <button
             v-if="unstagedFiles.length > 0"
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-added-text] hover:bg-[--diff-added] transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
-            @click="unstagedFiles.forEach(f => emit('stageFile', f.path))"
+            @click="emit('stageFile', unstagedFiles.map((f) => f.path))"
           >
             <FilePlus :size="12" />
             <span>全部 Stage</span>
@@ -576,28 +585,28 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           v-for="file in visibleUnstaged.items"
           :key="file.path"
           class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
-          :class="{ 'bg-green-900/20': selectedFile === file.path }"
-          @click="emit('selectFile', file.path, file.isStaged)"
+          :class="{ 'bg-green-900/20': selectedFileSet.has(file.path) }"
+          @click="onFileClick(file, unstagedFiles, $event)"
         >
           <button
             v-if="!isUntrackedFile(file)"
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-orange-700/60 hover:bg-orange-600 text-white transition-colors cursor-pointer"
             title="丢弃工作区变更"
-            @click.stop="emit('revertFile', file.path, false)"
+            @click.stop="emit('revertFile', [file.path], false)"
           >
             <Undo2 :size="12" />
           </button>
           <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-red-800/70 hover:bg-red-700 text-white transition-colors cursor-pointer"
             title="删除文件"
-            @click.stop="emit('deleteFile', file.path, false)"
+            @click.stop="emit('deleteFile', [file.path], false)"
           >
             <Trash2 :size="12" />
           </button>
           <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-green-700/60 hover:bg-green-600 text-white transition-colors cursor-pointer"
             title="Stage 此文件"
-            @click.stop="emit('stageFile', file.path)"
+            @click.stop="emit('stageFile', [file.path])"
           >
             <FilePlus :size="12" />
           </button>
@@ -632,7 +641,7 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInStaged"
-            @click="emit('revertFile', props.selectedFile!, true)"
+            @click="emit('revertFile', selectedStagedPaths, true)"
           >
             <Undo2 :size="12" />
             <span>Revert</span>
@@ -640,7 +649,7 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInStaged"
-            @click="emit('deleteFile', props.selectedFile!, true)"
+            @click="emit('deleteFile', selectedStagedPaths, true)"
           >
             <Trash2 :size="12" />
             <span>Delete</span>
@@ -648,14 +657,14 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer disabled:opacity-30 whitespace-nowrap flex-shrink-0"
             :disabled="!selectedInStaged"
-            @click="emit('unstageFile', props.selectedFile!)"
+            @click="emit('unstageFile', selectedStagedPaths)"
           >
             <FileMinus :size="12" />
             <span>Unstage</span>
           </button>
           <button
             class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-xs text-[--diff-removed-text] hover:bg-[--diff-removed] transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
-            @click="stagedFiles.forEach(f => emit('unstageFile', f.path))"
+            @click="emit('unstageFile', stagedFiles.map((f) => f.path))"
           >
             <FileMinus :size="12" />
             <span>全部 Unstage</span>
@@ -671,27 +680,27 @@ const visibleStaged = computed(() => virtualWindow(stagedFiles.value, stagedList
           v-for="file in visibleStaged.items"
           :key="file.path"
           class="flex h-12 items-center gap-1.5 px-2.5 py-2.5 text-xs border-b border-[--border-color] cursor-pointer transition-colors group"
-          :class="{ 'bg-red-900/20': selectedFile === file.path }"
-          @click="emit('selectFile', file.path, file.isStaged)"
+          :class="{ 'bg-red-900/20': selectedFileSet.has(file.path) }"
+          @click="onFileClick(file, stagedFiles, $event)"
         >
           <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-orange-700/60 hover:bg-orange-600 text-white transition-colors cursor-pointer"
             title="丢弃全部变更（含已 Stage）"
-            @click.stop="emit('revertFile', file.path, true)"
+            @click.stop="emit('revertFile', [file.path], true)"
           >
             <Undo2 :size="12" />
           </button>
           <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-red-800/70 hover:bg-red-700 text-white transition-colors cursor-pointer"
             title="删除文件"
-            @click.stop="emit('deleteFile', file.path, true)"
+            @click.stop="emit('deleteFile', [file.path], true)"
           >
             <Trash2 :size="12" />
           </button>
           <button
             class="flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-[var(--radius)] bg-red-700/60 hover:bg-red-600 text-white transition-colors cursor-pointer"
             title="Unstage 此文件"
-            @click.stop="emit('unstageFile', file.path)"
+            @click.stop="emit('unstageFile', [file.path])"
           >
             <FileMinus :size="12" />
           </button>
