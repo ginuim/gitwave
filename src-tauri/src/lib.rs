@@ -238,6 +238,12 @@ fn log_git_perf(repo: &str, args: &[&str], elapsed: Duration, success: bool, out
     );
 }
 
+/// 尽力开启能显著加速 Windows 上 `git status` 的仓库本地配置。失败静默忽略。
+fn ensure_fast_status_config(repo: &str) {
+    let _ = run_git(repo, &["config", "core.fsmonitor", "true"]);
+    let _ = run_git(repo, &["config", "core.untrackedCache", "true"]);
+}
+
 fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
     run_git_with_config(repo, &[], args)
 }
@@ -617,7 +623,7 @@ fn has_worktree_changes(repo: &str) -> Result<bool, String> {
     let raw = run_git_with_config(
         repo,
         &[("core.quotepath", "false")],
-        &["status", "--porcelain"],
+        &["--no-optional-locks", "status", "--porcelain"],
     )?;
     Ok(!raw.trim().is_empty())
 }
@@ -908,6 +914,7 @@ fn open_repository_at(app: &tauri::AppHandle, path_str: String) -> Result<String
         *guard = Some(path_str.clone());
     }
     save_last_repo(app, &path_str)?;
+    ensure_fast_status_config(&path_str);
     Ok(path_str)
 }
 
@@ -996,6 +1003,7 @@ fn switch_repository(app: tauri::AppHandle, path: String) -> Result<String, Stri
         *guard = Some(path.clone());
     }
     save_last_repo(&app, &path)?;
+    ensure_fast_status_config(&path);
     Ok(path)
 }
 
@@ -1011,7 +1019,13 @@ async fn get_git_status(state: State<'_, AppState>) -> Result<Vec<FileStatus>, S
         let raw = run_git_bytes_with_config(
             &repo,
             &[("core.quotepath", "false")],
-            &["status", "--porcelain=v2", "-z", "--branch"],
+            &[
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--branch",
+            ],
         )?;
         Ok(parse_git_status_porcelain_v2_z(&raw))
     })
@@ -1255,14 +1269,14 @@ async fn get_git_log(
         .map_err(|e| format!("log task failed: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_branches(state: State<'_, AppState>) -> Result<Vec<BranchInfo>, String> {
     let repo = require_repo(&state)?;
     let raw = run_git(&repo, &["branch", "-a"])?;
     Ok(parse_branches(&raw))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_branch_tips(state: State<'_, AppState>) -> Result<Vec<BranchTip>, String> {
     let repo = require_repo(&state)?;
     let raw = run_git(
@@ -1361,7 +1375,7 @@ fn get_worktree_state(state: State<'_, AppState>) -> Result<WorktreeState, Strin
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_operation_state(state: State<'_, AppState>) -> Result<OperationState, String> {
     let repo = require_repo(&state)?;
     operation_state(&repo)
@@ -1779,7 +1793,11 @@ fn default_remote_branch(repo: &str, remote: &str) -> Result<String, String> {
 fn ahead_behind_for_branch(repo: &str, branch: &str) -> Result<AheadBehind, String> {
     let compare = compare_ref_for_branch(repo, branch)?;
     let (ahead, behind) = parse_ahead_behind(repo, &format!("{compare}...HEAD"))?;
-    let unpushed_hashes = list_unpushed_hashes(repo, &compare)?;
+    let unpushed_hashes = if ahead == 0 {
+        Vec::new()
+    } else {
+        list_unpushed_hashes(repo, &compare)?
+    };
     Ok(AheadBehind {
         ahead,
         behind,
@@ -1787,7 +1805,7 @@ fn ahead_behind_for_branch(repo: &str, branch: &str) -> Result<AheadBehind, Stri
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_ahead_behind(state: State<'_, AppState>) -> Result<AheadBehind, String> {
     let repo = require_repo(&state)?;
     let branch = run_git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
@@ -1973,7 +1991,7 @@ fn count_subtree_pending_changes(repo: &str, prefix: &str) -> Result<u32, String
     Ok(paths.len() as u32)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_subtrees(state: State<'_, AppState>) -> Result<Vec<SubtreeInfo>, String> {
     let repo = require_repo(&state)?;
     let discovered = discover_subtree_prefixes(&repo)?;
@@ -2090,7 +2108,7 @@ fn parse_submodule_status_line(line: &str) -> Option<SubmoduleInfo> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_submodules(state: State<'_, AppState>) -> Result<Vec<SubmoduleInfo>, String> {
     let repo = require_repo(&state)?;
     let raw = run_git_with_config(
@@ -2147,7 +2165,7 @@ fn create_tag(
     run_git(&repo, &args)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_tags(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let repo = require_repo(&state)?;
     let raw = run_git(&repo, &["tag", "--sort=-creatordate"])?;
@@ -2180,7 +2198,7 @@ fn stash_save(
     run_git(&repo, &args)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stash_list(state: State<'_, AppState>) -> Result<Vec<StashEntry>, String> {
     let repo = require_repo(&state)?;
     let raw = run_git(&repo, &["stash", "list"])?;

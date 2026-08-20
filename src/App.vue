@@ -167,6 +167,9 @@ async function openRepoFromDrop(paths: string[]) {
 let debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let statusRequestSeq = 0
 let historyRequestSeq = 0
+/** 慢速刷新（ahead/behind、subtree、submodule）在聚焦时的最小间隔 */
+const FOCUS_SLOW_REFRESH_INTERVAL_MS = 60_000
+let lastSlowRefreshAt = 0
 
 function refreshWorkspaceIfVisible() {
   if (!repoPath.value) return
@@ -174,8 +177,21 @@ function refreshWorkspaceIfVisible() {
   if (debouncedRefreshTimer) clearTimeout(debouncedRefreshTimer)
   debouncedRefreshTimer = setTimeout(() => {
     debouncedRefreshTimer = null
-    void syncRefresh({ silentStatus: true })
+    void refreshOnFocus()
   }, 400)
+}
+
+/** 聚焦时只做轻量刷新；慢速数据按间隔节流，避免 Windows 上频繁拉起 git 进程 */
+async function refreshOnFocus() {
+  await Promise.all([
+    refreshStatus({ silent: true }),
+    refreshBranches(),
+    refreshOperationState(),
+  ])
+  const now = Date.now()
+  if (now - lastSlowRefreshAt < FOCUS_SLOW_REFRESH_INTERVAL_MS) return
+  lastSlowRefreshAt = now
+  await Promise.all([refreshAheadBehind(), refreshSubtrees(), refreshSubmodules()])
 }
 
 // Get repo path on mount
@@ -226,8 +242,12 @@ async function refreshBranches() {
   if (!repoPath.value) return
   branchesLoading.value = true
   try {
-    branches.value = await invoke<BranchInfo[]>('get_branches')
-    branchTips.value = await invoke<BranchTip[]>('get_branch_tips')
+    const [nextBranches, nextTips] = await Promise.all([
+      invoke<BranchInfo[]>('get_branches'),
+      invoke<BranchTip[]>('get_branch_tips'),
+    ])
+    branches.value = nextBranches
+    branchTips.value = nextTips
   } catch (e: any) {
     showToast(String(e))
   } finally {
@@ -315,6 +335,7 @@ async function refreshOperationState() {
 }
 
 async function syncRefresh(opts?: { silentStatus?: boolean }) {
+  lastSlowRefreshAt = Date.now()
   const tasks = [
     refreshStatus(opts?.silentStatus ? { silent: true } : undefined),
     refreshBranches(),
