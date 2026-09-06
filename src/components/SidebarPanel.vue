@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import {
-  FolderOpen, GitBranch, Globe, Pin, PinOff,
+  FolderOpen, GitBranch, Globe, Pin, PinOff, X as XIcon,
   List, History, Loader2, ChevronRight, ChevronDown, Plus, Tag,
   ChevronDown as ChevronDownIcon,
   RefreshCw, ArrowDownToLine, ArrowUpToLine, Archive, Settings,
   FolderTree,
 } from 'lucide-vue-next'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import type { BranchInfo, AheadBehind, SubmoduleInfo, SubtreeInfo } from '../types'
 import { getSubtreeRemoteConfig, saveSubtreeRemoteConfig, shortCommit } from '../utils/subtree'
 
@@ -55,6 +56,8 @@ const emit = defineEmits<{
   updateSubmodule: [path: string]
   settingsOpen: []
   cloneRepo: [url: string, targetDir: string]
+  removeRecentRepo: [path: string]
+  revealError: [message: string]
 }>()
 
 // --- Dropdown ---
@@ -107,6 +110,28 @@ function togglePinRepo(path: string) {
     pinnedRepos.value.push(path)
   }
   savePinnedRepos()
+}
+
+function unpinRepo(path: string) {
+  const idx = pinnedRepos.value.indexOf(path)
+  if (idx < 0) return
+  pinnedRepos.value.splice(idx, 1)
+  savePinnedRepos()
+}
+
+async function showRepoInFolder(path: string, e: Event) {
+  e.stopPropagation()
+  try {
+    await revealItemInDir(path)
+  } catch (err) {
+    emit('revealError', String(err))
+  }
+}
+
+function removeRepoFromList(path: string, e: Event) {
+  e.stopPropagation()
+  unpinRepo(path)
+  emit('removeRecentRepo', path)
 }
 
 function toggleDropdown() {
@@ -687,13 +712,29 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
                 <div class="truncate leading-tight">{{ dirName(path) }}</div>
                 <div class="text-[10px] truncate opacity-50 leading-tight">{{ path }}</div>
               </div>
-              <button
-                class="flex-shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity text-current cursor-pointer"
-                @click.stop="togglePinRepo(path)"
-                title="取消固定"
-              >
-                <PinOff :size="12" />
-              </button>
+              <div class="flex-shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                <button
+                  class="p-0.5 rounded hover:opacity-100 transition-opacity text-current cursor-pointer"
+                  title="在文件管理器中显示"
+                  @click.stop="showRepoInFolder(path, $event)"
+                >
+                  <FolderOpen :size="12" />
+                </button>
+                <button
+                  class="p-0.5 rounded hover:opacity-100 transition-opacity text-current cursor-pointer"
+                  @click.stop="togglePinRepo(path)"
+                  title="取消固定"
+                >
+                  <PinOff :size="12" />
+                </button>
+                <button
+                  class="p-0.5 rounded hover:opacity-100 transition-opacity text-current cursor-pointer"
+                  title="从列表移除"
+                  @click.stop="removeRepoFromList(path, $event)"
+                >
+                  <XIcon :size="12" />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -718,13 +759,29 @@ const pinnedSet = computed(() => new Set(props.pinnedBranches))
                 <div class="truncate leading-tight">{{ dirName(path) }}</div>
                 <div class="text-[10px] truncate opacity-50 leading-tight">{{ path }}</div>
               </div>
-              <button
-                class="flex-shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity text-current cursor-pointer"
-                @click.stop="togglePinRepo(path)"
-                :title="isPinnedRepo(path) ? '取消固定' : '固定到顶部'"
-              >
-                <Pin :size="12" />
-              </button>
+              <div class="flex-shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                <button
+                  class="p-0.5 rounded hover:opacity-100 transition-opacity text-current cursor-pointer"
+                  title="在文件管理器中显示"
+                  @click.stop="showRepoInFolder(path, $event)"
+                >
+                  <FolderOpen :size="12" />
+                </button>
+                <button
+                  class="p-0.5 rounded hover:opacity-100 transition-opacity text-current cursor-pointer"
+                  @click.stop="togglePinRepo(path)"
+                  :title="isPinnedRepo(path) ? '取消固定' : '固定到顶部'"
+                >
+                  <Pin :size="12" />
+                </button>
+                <button
+                  class="p-0.5 rounded hover:opacity-100 transition-opacity text-current cursor-pointer"
+                  title="从列表移除"
+                  @click.stop="removeRepoFromList(path, $event)"
+                >
+                  <XIcon :size="12" />
+                </button>
+              </div>
             </div>
           </div>
 

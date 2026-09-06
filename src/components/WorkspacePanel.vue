@@ -9,6 +9,7 @@ import type { FileStatus, AppSettings, ProviderConfig, ModelConfig, AiStagedDiff
 import { isUntrackedFile, isUntrackedPath } from '../utils/gitStatus'
 import { subtreePrefixForPath } from '../utils/subtree'
 import { buildCommitPayload, canSubmitCommit, commitSubmitLabel } from '../utils/commitActions'
+import { virtualListWindow } from '../utils/virtualList'
 
 const props = defineProps<{
   statuses: FileStatus[]
@@ -516,17 +517,25 @@ function onWorkspaceScroll(event: Event) {
   workspaceScrollTop.value = (event.currentTarget as HTMLElement).scrollTop
 }
 
+function listOffsetInContent(listEl: HTMLElement | null): number {
+  const root = workspaceScrollRef.value
+  if (!root || !listEl) return 0
+  return listEl.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
+}
+
 function virtualWindow(files: FileStatus[], listEl: HTMLElement | null) {
-  const viewportHeight = workspaceScrollRef.value?.clientHeight ?? 0
-  const listTop = listEl?.offsetTop ?? 0
-  const firstVisible = Math.floor((workspaceScrollTop.value - listTop) / FILE_ROW_HEIGHT)
-  const visibleCount = Math.ceil(viewportHeight / FILE_ROW_HEIGHT)
-  const start = Math.max(0, firstVisible - FILE_ROW_OVERSCAN)
-  const end = Math.min(files.length, Math.max(0, firstVisible) + visibleCount + FILE_ROW_OVERSCAN)
+  const win = virtualListWindow(
+    files.length,
+    workspaceScrollTop.value,
+    listOffsetInContent(listEl),
+    workspaceScrollRef.value?.clientHeight ?? 0,
+    FILE_ROW_HEIGHT,
+    FILE_ROW_OVERSCAN,
+  )
   return {
-    items: files.slice(start, end),
-    top: start * FILE_ROW_HEIGHT,
-    bottom: Math.max(0, (files.length - end) * FILE_ROW_HEIGHT),
+    items: files.slice(win.start, win.end),
+    top: win.top,
+    bottom: win.bottom,
   }
 }
 

@@ -53,19 +53,36 @@ function hunkHeaderSuffix(header: string): string {
   return secondAt >= 0 ? header.slice(secondAt + 2).trim() : ''
 }
 
+/** 第一段 `diff --git` 的起点。工作区拼接的 diff 以该行开头；`git show` 则前面还有 commit 头。 */
+export function diffGitBodyOffset(diffText: string): number {
+  if (!diffText) return -1
+  if (diffText.startsWith('diff --git ')) return 0
+  const idx = diffText.indexOf('\ndiff --git ')
+  return idx >= 0 ? idx + 1 : -1
+}
+
+export function splitDiffFileParts(diffText: string): string[] {
+  if (!diffText) return []
+  const offset = diffGitBodyOffset(diffText)
+  const diffContent = offset >= 0 ? diffText.slice(offset) : diffText
+  const rawParts = diffContent.split('\ndiff --git ')
+  const parts: string[] = []
+  for (let i = 0; i < rawParts.length; i++) {
+    const part = rawParts[i]
+    if (!part.trim()) continue
+    parts.push(i === 0 ? part : `diff --git ${part}`)
+  }
+  return parts
+}
+
 export function parseDiffSections(diffText: string, fallbackFileName: string | null): FileDiffSection[] {
   if (!diffText) return []
 
-  const diffStart = diffText.indexOf('\ndiff --git ')
-  const diffContent = diffStart >= 0 ? diffText.slice(diffStart + 1) : diffText
-  const rawParts = diffContent.split('\ndiff --git ')
+  const rawParts = splitDiffFileParts(diffText)
   const sections: FileDiffSection[] = []
 
   for (let sectionIndex = 0; sectionIndex < rawParts.length; sectionIndex++) {
-    const part = rawParts[sectionIndex]
-    if (!part.trim()) continue
-
-    const fullText = sectionIndex === 0 ? part : `diff --git ${part}`
+    const fullText = rawParts[sectionIndex]
     const allLines = fullText.split('\n')
     const diffGitLine = allLines[0]
     const match = diffGitLine.match(/diff --git a\/(.+) b\/(.+)/)
@@ -326,8 +343,8 @@ export function applyOptimisticRevertToDiffText(
 ): string {
   if (!diffText || revertedKeys.size === 0) return diffText
 
-  const diffStart = diffText.indexOf('\ndiff --git ')
-  const prefix = diffStart >= 0 ? diffText.slice(0, diffStart + 1) : ''
+  const bodyStart = diffGitBodyOffset(diffText)
+  const prefix = bodyStart > 0 ? diffText.slice(0, bodyStart) : ''
   const sections = parseDiffSections(diffText, fileName)
   const patchParts: string[] = []
 

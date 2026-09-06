@@ -132,4 +132,39 @@ describe('diffPatch', () => {
     expect(next).toContain('-const e = 5')
     expect(next).toContain('+const e = 50')
   })
+
+  const TWO_FILE_DIFF = `diff --git a/a.ts b/a.ts
+index 1111111..2222222 100644
+--- a/a.ts
++++ b/a.ts
+@@ -1,1 +1,1 @@
+-old-a
++new-a
+diff --git a/b.ts b/b.ts
+index 3333333..4444444 100644
+--- a/b.ts
++++ b/b.ts
+@@ -1,1 +1,1 @@
+-old-b
++new-b
+`
+
+  it('keeps every file when the concatenated diff starts with diff --git', () => {
+    const sections = parseDiffSections(TWO_FILE_DIFF, null)
+    expect(sections.map((section) => section.fileName)).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('does not drop the first file when optimistically reverting a later section', () => {
+    const sections = parseDiffSections(TWO_FILE_DIFF, null)
+    const revertedKeys = lineKeysInChangeSegment(sections[1].hunks[0], {
+      kind: 'changes',
+      startLineIndex: 1,
+      endLineIndex: 2,
+    })
+    const next = applyOptimisticRevertToDiffText(TWO_FILE_DIFF, null, revertedKeys)
+    const nextSections = parseDiffSections(next, null)
+    expect(nextSections.map((section) => section.fileName)).toEqual(['a.ts'])
+    expect(next).toContain('+new-a')
+    expect(next).not.toContain('+new-b')
+  })
 })

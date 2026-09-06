@@ -46,14 +46,12 @@ const diffText = ref('')
 const commitLogs = ref<CommitLog[]>([])
 const diffFileName = computed(() => {
   if (selectedCommitHash.value) return `commit ${selectedCommitHash.value} - ${selectedCommitMsg.value}`
+  const count = selectedFilePaths.value.size
+  if (count > 1) return `${count} 个文件`
   return selectedFile.value
 })
 
 const canStage = computed(() => !selectedCommitHash.value && !!selectedFile.value)
-
-const selectedFileUntracked = computed(
-  () => !!selectedFile.value && isUntrackedPath(selectedFile.value, statuses.value),
-)
 
 const branches = ref<BranchInfo[]>([])
 const branchTips = ref<BranchTip[]>([])
@@ -117,6 +115,7 @@ const toast = ref<{ message: string; type: 'error' | 'success' } | null>(null)
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
 function clearFileSelection() {
+  diffRequestSeq++
   selectedFile.value = null
   selectedFileIsStaged.value = false
   selectedFilePaths.value = new Set()
@@ -167,6 +166,7 @@ async function openRepoFromDrop(paths: string[]) {
 let debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let statusRequestSeq = 0
 let historyRequestSeq = 0
+let diffRequestSeq = 0
 /** 慢速刷新（ahead/behind、subtree、submodule）在聚焦时的最小间隔 */
 const FOCUS_SLOW_REFRESH_INTERVAL_MS = 60_000
 let lastSlowRefreshAt = 0
@@ -261,6 +261,14 @@ async function refreshRecentRepos() {
     recentRepos.value = await invoke<string[]>('get_recent_repos')
   } catch (_) {
     // ignore
+  }
+}
+
+async function removeRecentRepo(path: string) {
+  try {
+    recentRepos.value = await invoke<string[]>('remove_recent_repo', { path })
+  } catch (e: any) {
+    showToast(String(e))
   }
 }
 
@@ -397,21 +405,55 @@ function removePathsFromSelection(paths: string[]) {
   selectedFilePaths.value = next
 }
 
-async function syncPrimaryFileDiff() {
-  const primary = selectedFile.value
-  if (!primary) return
-  const stillThere = statuses.value.some((s) => s.path === primary)
-  if (!stillThere) {
-    clearFileSelection()
+function orderedSelectedWorkspacePaths(): string[] {
+  const selected = selectedFilePaths.value
+  const ordered: string[] = []
+  const seen = new Set<string>()
+  for (const status of statuses.value) {
+    if (status.isStaged !== selectedFileIsStaged.value) continue
+    if (!selected.has(status.path) || seen.has(status.path)) continue
+    seen.add(status.path)
+    ordered.push(status.path)
+  }
+  return ordered
+}
+
+function reconcileWorkspaceSelection(): string[] {
+  const ordered = orderedSelectedWorkspacePaths()
+  selectedFilePaths.value = new Set(ordered)
+  if (ordered.length === 0) {
+    selectedFile.value = null
+    selectionAnchor.value = null
+    diffText.value = ''
+    return []
+  }
+  if (!selectedFile.value || !ordered.includes(selectedFile.value)) {
+    selectedFile.value = ordered[0]
+  }
+  return ordered
+}
+
+async function loadWorkspaceDiffs(paths: string[], isStaged: boolean) {
+  const req = ++diffRequestSeq
+  if (paths.length === 0) {
+    if (req === diffRequestSeq) diffText.value = ''
     return
   }
-  selectedFileIsStaged.value = statuses.value.some(
-    (s) => s.path === primary && s.isStaged === selectedFileIsStaged.value,
-  )
-  diffText.value = await invoke<string>('get_file_diff', {
-    path: primary,
-    isStaged: selectedFileIsStaged.value,
-  })
+  try {
+    const text = await invoke<string>('get_files_diff', { paths, isStaged })
+    if (req !== diffRequestSeq) return
+    diffText.value = text
+  } catch (e: any) {
+    if (req !== diffRequestSeq) return
+    diffText.value = ''
+    showToast(String(e))
+  }
+}
+
+async function syncSelectedWorkspaceDiff() {
+  const paths = reconcileWorkspaceSelection()
+  if (paths.length === 0) return
+  await loadWorkspaceDiffs(paths, selectedFileIsStaged.value)
 }
 
 // Stage / Unstage
@@ -424,9 +466,7 @@ async function stageFile(pathOrPaths: string | string[]) {
     }
     await refreshStatus()
     removePathsFromSelection(paths)
-    if (selectedFile.value && paths.includes(selectedFile.value)) {
-      await syncPrimaryFileDiff()
-    }
+    await syncSelectedWorkspaceDiff()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -441,9 +481,7 @@ async function unstageFile(pathOrPaths: string | string[]) {
     }
     await refreshStatus()
     removePathsFromSelection(paths)
-    if (selectedFile.value && paths.includes(selectedFile.value)) {
-      await syncPrimaryFileDiff()
-    }
+    await syncSelectedWorkspaceDiff()
   } catch (e: any) {
     showToast(String(e))
   }
@@ -472,9 +510,7 @@ async function revertFile(pathOrPaths: string | string[], isStaged: boolean) {
     }
     await refreshStatus()
     removePathsFromSelection(paths)
-    if (selectedFile.value && paths.includes(selectedFile.value)) {
-      await syncPrimaryFileDiff()
-    }
+    await syncSelectedWorkspaceDiff()
     showToast('已丢弃变更', 'success')
   } catch (e: any) {
     showToast(String(e))
@@ -494,11 +530,8 @@ async function deleteFile(pathOrPaths: string | string[], isStaged: boolean) {
       await invoke('delete_file', { path, isStaged })
     }
     await refreshStatus()
-    if (selectedFile.value && paths.includes(selectedFile.value)) {
-      clearFileSelection()
-    } else {
-      removePathsFromSelection(paths)
-    }
+    removePathsFromSelection(paths)
+    await syncSelectedWorkspaceDiff()
     showToast('已删除文件', 'success')
   } catch (e: any) {
     showToast(String(e))
@@ -574,43 +607,23 @@ async function selectFile(
   selectedFileIsStaged.value = primaryIsStaged
   selectedCommitHash.value = null
   selectedCommitMsg.value = ''
-  try {
-    diffText.value = await invoke<string>('get_file_diff', { path: primary, isStaged: primaryIsStaged })
-  } catch (e: any) {
-    diffText.value = ''
-    showToast(String(e))
-  }
+  const ordered = sectionPaths.filter((item) => result.selected.has(item))
+  await loadWorkspaceDiffs(ordered, primaryIsStaged)
 }
 
 async function refreshSelectedFileDiff() {
-  if (!selectedFile.value) return
-  try {
-    diffText.value = await invoke<string>('get_file_diff', {
-      path: selectedFile.value,
-      isStaged: selectedFileIsStaged.value,
-    })
-    await refreshOperationState()
-  } catch (e: any) {
-    diffText.value = ''
-    showToast(String(e))
-  }
+  await syncSelectedWorkspaceDiff()
+  await refreshOperationState()
 }
 
 // Stage a patch (hunk or selected lines)
 async function handleStagePatch(patch: string) {
   if (patchStaging.value) return
-  const targetFile = selectedFile.value
   patchStaging.value = true
   try {
     await invoke('stage_patch', { patch })
     await refreshStatus()
-    if (targetFile && selectedFile.value === targetFile) {
-      selectedFileIsStaged.value = false
-      diffText.value = await invoke<string>('get_file_diff', {
-        path: targetFile,
-        isStaged: false,
-      })
-    }
+    await syncSelectedWorkspaceDiff()
     showToast('已 Stage', 'success')
   } catch (e: any) {
     showToast(String(e))
@@ -640,17 +653,7 @@ async function handleRevertPatch(patch: string, isStaged: boolean, revertedKeys:
   try {
     await invoke('revert_patch', { patch, isStaged })
     await refreshStatus()
-    if (targetFile && selectedFile.value === targetFile) {
-      const stillThere = statuses.value.some((s) => s.path === targetFile)
-      if (!stillThere) {
-        clearFileSelection()
-      } else {
-        diffText.value = await invoke<string>('get_file_diff', {
-          path: targetFile,
-          isStaged,
-        })
-      }
-    }
+    await syncSelectedWorkspaceDiff()
     showToast('已丢弃变更', 'success')
   } catch (e: any) {
     diffText.value = snapshot
@@ -663,6 +666,7 @@ async function handleRevertPatch(patch: string, isStaged: boolean, revertedKeys:
 // Select commit - show commit diff
 async function selectCommit(hash: string) {
   const commit = commitLogs.value.find((c) => c.hash === hash)
+  diffRequestSeq++
   selectedCommitHash.value = hash
   selectedCommitMsg.value = commit?.message ?? ''
   selectedFilePaths.value = new Set()
@@ -934,12 +938,7 @@ async function markFileResolved(path: string) {
     await invoke<string>('mark_file_resolved', { path })
     showToast(`已标记解决：${path}`, 'success')
     await syncRefresh({ silentStatus: true })
-    if (selectedFile.value === path) {
-      diffText.value = await invoke<string>('get_file_diff', {
-        path,
-        isStaged: selectedFileIsStaged.value,
-      })
-    }
+    await syncSelectedWorkspaceDiff()
   } catch (e: any) {
     showToast(String(e))
     await refreshOperationState()
@@ -1085,24 +1084,7 @@ async function onSwitchTab(tab: 'workspace' | 'history') {
     // Clear commit selection when switching back to workspace
     selectedCommitHash.value = null
     selectedCommitMsg.value = ''
-    // Re-fetch diff for the selected file if still relevant（与列表侧一致：同一路径可能同时有 staged / unstaged 行）
-    if (selectedFile.value && statuses.value.some(s => s.path === selectedFile.value)) {
-      const match =
-        statuses.value.find(
-          (s) => s.path === selectedFile.value && s.isStaged === selectedFileIsStaged.value,
-        ) ?? statuses.value.find((s) => s.path === selectedFile.value)
-      const isStaged = match?.isStaged ?? selectedFileIsStaged.value
-      try {
-        diffText.value = await invoke<string>('get_file_diff', {
-          path: selectedFile.value,
-          isStaged,
-        })
-      } catch {
-        diffText.value = ''
-      }
-    } else {
-      clearFileSelection()
-    }
+    await syncSelectedWorkspaceDiff()
   }
 }
 
@@ -1125,6 +1107,8 @@ const selectedFilesForPanel = computed(() => [...selectedFilePaths.value])
         :fetch-loading="fetchLoading"
         @open-repo="openRepo"
         @switch-repo="switchRepo"
+        @remove-recent-repo="removeRecentRepo"
+        @reveal-error="showToast($event)"
         @switch-tab="onSwitchTab"
         @checkout-branch="checkoutBranch"
         @checkout-remote="checkoutRemote"
@@ -1237,13 +1221,13 @@ const selectedFilesForPanel = computed(() => [...selectedFilePaths.value])
         :diff-text="diffText"
         :file-name="diffFileName"
         :can-stage="!selectedCommitHash && !!selectedFile && !selectedFileIsStaged"
-        :can-revert="!selectedCommitHash && !!selectedFile && !selectedFileUntracked"
+        :can-revert="!selectedCommitHash && !!selectedFile"
         :file-path="selectedCommitHash ? null : selectedFile"
         :repo-path="repoPath"
         :workspace-is-staged="selectedFileIsStaged"
         :commit-hash="selectedCommitHash"
         :patch-staging="patchStaging"
-        :conflicted="!!selectedFile && operationState.conflictedFiles.includes(selectedFile)"
+        :conflicted="selectedFilesForPanel.length === 1 && !!selectedFile && operationState.conflictedFiles.includes(selectedFile)"
         @stage-patch="handleStagePatch"
         @stage-file="stageFile"
         @revert-patch="handleRevertPatch"

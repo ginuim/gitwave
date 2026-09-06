@@ -9,6 +9,7 @@ import {
   getHunkBodySegments,
   lineKeysInChangeSegment,
   parseDiffSections,
+  splitDiffFileParts,
   type DiffHunk,
   type DiffLine,
   type HunkBodySegment,
@@ -87,9 +88,9 @@ interface CommitInfo {
 }
 
 /** 新文件 diff 不支持按块 Revert（仅 + 行，语义是删文件） */
-const showHunkRevert = computed(
-  () => props.canRevert && !diffShowsNewFile(props.diffText),
-)
+function canRevertSection(section: { diffPrefix: string }): boolean {
+  return props.canRevert && !diffShowsNewFile(section.diffPrefix)
+}
 
 const commitInfo = computed((): CommitInfo | null => {
   const text = props.diffText
@@ -133,18 +134,9 @@ const binaryImageEntries = computed((): { fileName: string }[] => {
   const text = props.diffText
   if (!text) return []
 
-  const diffStart = text.indexOf('\ndiff --git ')
-  const diffContent = diffStart >= 0 ? text.slice(diffStart + 1) : text
-  const rawParts = diffContent.split('\ndiff --git ')
   const result: { fileName: string }[] = []
-
-  for (let idx = 0; idx < rawParts.length; idx++) {
-    const part = idx === 0 ? rawParts[0] : rawParts[idx]
-    if (!part.trim()) continue
-
-    const fullText = idx === 0 ? part : 'diff --git ' + part
+  for (const fullText of splitDiffFileParts(text)) {
     const allLines = fullText.split('\n')
-
     const firstLine = allLines[0]
     const match = firstLine.match(/diff --git a\/(.+) b\/(.+)/)
     const fileName = match ? (match[2] || match[1]) : (props.fileName || '')
@@ -192,12 +184,7 @@ watch(
     }
 
     const kind = props.commitHash ? 'commit' : props.workspaceIsStaged ? 'staged' : 'unstaged'
-    const paths =
-      props.commitHash != null
-        ? entries.map((e) => e.fileName)
-        : props.filePath
-          ? entries.filter((e) => e.fileName === props.filePath).map((e) => e.fileName)
-          : entries.map((e) => e.fileName)
+    const paths = entries.map((e) => e.fileName)
 
     if (paths.length === 0) {
       binaryImagePreviewLoading.value = false
@@ -615,11 +602,11 @@ onUnmounted(() => {
             <span class="min-w-0 flex-1 truncate text-xs text-[--text-primary] font-medium font-mono-ui">{{ section.fileName || '差异' }}</span>
             <div class="ml-2 flex shrink-0 items-center gap-2">
               <button
-                v-if="showHunkRevert"
+                v-if="canRevertSection(section)"
                 :disabled="patchStaging"
                 class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-orange-700/70 hover:bg-orange-600 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="丢弃整个文件变更"
-                @click.stop="revertEntireFile(filePath || section.fileName)"
+                @click.stop="revertEntireFile(section.fileName || filePath || '')"
               >
                 <Undo2 :size="12" />
                 Revert 文件
@@ -629,7 +616,7 @@ onUnmounted(() => {
                 :disabled="patchStaging"
                 class="flex items-center gap-1 px-2.5 py-2.5 rounded-[var(--radius)] text-[10px] bg-green-700/70 hover:bg-green-600 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Stage 整个文件"
-                @click.stop="stageEntireFile(filePath || section.fileName)"
+                @click.stop="stageEntireFile(section.fileName || filePath || '')"
               >
                 <FilePlus :size="12" />
                 Stage 文件
@@ -673,14 +660,14 @@ onUnmounted(() => {
                     class="relative group/diffblk rounded-sm"
                   >
                     <div
-                      v-if="showHunkRevert || canStage"
+                      v-if="canRevertSection(section) || canStage"
                       class="sticky top-[5.5rem] z-[4] flex min-w-0 shrink-0 items-center gap-2 border-y border-[--border-color] bg-[--bg-secondary] px-2.5 py-1.5 text-[10px] text-[--text-secondary] shadow-sm select-none"
                     >
                       <span class="min-w-0 flex-1 truncate font-mono-ui">
                         {{ selectedLineIdsInBlock(hunk, seg).size > 0 ? `已选 ${selectedLineIdsInBlock(hunk, seg).size} 行` : '变更区块' }}
                       </span>
                       <button
-                        v-if="showHunkRevert"
+                        v-if="canRevertSection(section)"
                         :disabled="patchStaging"
                         type="button"
                         class="diff-revert-float flex items-center gap-1 px-2 py-1 rounded-[var(--radius)] text-[10px] bg-orange-700 text-white shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"

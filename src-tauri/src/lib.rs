@@ -957,6 +957,14 @@ fn get_recent_repos(app: tauri::AppHandle) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn remove_recent_repo(app: tauri::AppHandle, path: String) -> Result<Vec<String>, String> {
+    let mut recent = load_recent_repos(&app);
+    recent.retain(|r| r != &path);
+    save_recent_repos(&app, &recent)?;
+    Ok(recent)
+}
+
+#[tauri::command]
 async fn clone_repository(url: String, target_dir: String) -> Result<String, String> {
     let target = PathBuf::from(&target_dir);
 
@@ -1185,6 +1193,21 @@ fn file_diff_for_repo(repo: &str, path: &str, is_staged: bool) -> Result<String,
     Ok(raw)
 }
 
+fn files_diff_for_repo(repo: &str, paths: &[String], is_staged: bool) -> Result<String, String> {
+    let mut parts: Vec<String> = Vec::new();
+    for path in paths {
+        if path.trim().is_empty() {
+            continue;
+        }
+        let diff = file_diff_for_repo(repo, path, is_staged)?;
+        let trimmed = diff.trim_end();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+    }
+    Ok(parts.join("\n"))
+}
+
 #[tauri::command]
 async fn get_file_diff(
     state: State<'_, AppState>,
@@ -1198,6 +1221,23 @@ async fn get_file_diff(
         .await
         .map_err(|_| "git task gate closed".to_string())?;
     tokio::task::spawn_blocking(move || file_diff_for_repo(&repo, &path, is_staged))
+        .await
+        .map_err(|e| format!("diff task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_files_diff(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    is_staged: bool,
+) -> Result<String, String> {
+    let repo = require_repo(&state)?;
+    let gate = Arc::clone(&state.git_gate);
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|_| "git task gate closed".to_string())?;
+    tokio::task::spawn_blocking(move || files_diff_for_repo(&repo, &paths, is_staged))
         .await
         .map_err(|e| format!("diff task failed: {e}"))?
 }
@@ -2936,6 +2976,7 @@ pub fn run() {
             open_repository_at_path,
             get_repo_path,
             get_recent_repos,
+            remove_recent_repo,
             switch_repository,
             get_git_status,
             stage_file,
@@ -2946,6 +2987,7 @@ pub fn run() {
             amend_last_commit,
             soft_reset_last_commit,
             get_file_diff,
+            get_files_diff,
             get_git_log,
             get_branches,
             get_branch_tips,
